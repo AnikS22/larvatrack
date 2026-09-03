@@ -47,6 +47,9 @@ D = dict(
     max_area=8000,      # px, ignore plate edge, shadows, your hand
     max_jump=60,        # px between samples; further than this is not the larva
     noise_floor=1.5,    # px, ignore sub-jitter steps (else path length inflates)
+    edge_pct=90,        # % of the dish radius kept. Larvae wall-follow, so raising
+                        # this recovers the outer rim - but keeping more of the rim
+                        # also gave a smear-swap in the self-check, so it is opt-in.
     sample_hz=2.0,      # sampling rate; larval path length is scale-dependent,
                         # so keep this IDENTICAL across every animal you compare
 )
@@ -97,13 +100,15 @@ def detect(gray, c):
                         cv2.approxPolyDP(cnt, 1.0, True).reshape(-1, 2)))
     return sorted(out, key=lambda b: -b[0])
 
-def mask_dish(frame, cx, cy, r, shrink=0.90):
+def mask_dish(frame, cx, cy, r, shrink=0.97):
     """Blank everything outside the dish to the dish's own average shade, so the
     rim, the ruler and the bench cannot be mistaken for a larva.
 
-    shrink=0.90 also cuts the bright rim highlight just inside the wall, which
-    otherwise out-contrasts the larva every time. Cost: a larva pressed right up
-    against the wall (outer ~10% of the radius) is not seen."""
+    shrink=0.97 keeps almost the whole dish. It used to be 0.90 to hide the bright
+    rim highlight, which out-contrasted the larva - but the rim is a long thin arc
+    and now fails the LARVA_ELONG gate on shape, so blanking it is no longer worth
+    losing 3 mm of dish. Larvae wall-follow, and that is exactly when they cover
+    the most ground."""
     m = np.zeros(frame.shape[:2], np.uint8)
     cv2.circle(m, (int(cx), int(cy)), int(r * shrink), 255, -1)
     fill = cv2.mean(frame, m)[:3]
@@ -302,7 +307,10 @@ def step_one(L, gray, c, t, taken=()):
         # the same size as the animal we locked - otherwise a shadow edge wins.
         for inv, th, b in rank(win, c, near=(last[0] - x0, last[1] - y0))[:6]:
             f = shift(b)
-            a0 = L["area"] or f[0]
+            # Judge size against the blob we locked at t=0. Judging against last
+            # frame's size lets 3x-per-step tolerance compound, so the lock walks
+            # off onto ever-bigger junk and tracking decays over a long run.
+            a0 = L.get("area0") or L["area"] or f[0]
             if (math.hypot(f[1] - last[0], f[2] - last[1]) <= reach
                     and 0.35 * a0 <= f[0] <= 3.0 * a0
                     and all(math.hypot(f[1] - tx, f[2] - ty) > 6 for tx, ty in taken)):
@@ -436,7 +444,8 @@ def dish_crop(frame, q):
     if r <= 0:
         return frame
     h, w = frame.shape[:2]
-    return mask_dish(frame, w / 2, h / 2, r)
+    return mask_dish(frame, w / 2, h / 2, r,
+                     shrink=max(50, min(100, float(q.get("edge_pct") or 90))) / 100.0)
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -793,6 +802,50 @@ def demo():
                  if step_one(AL, ag, dict(ac, thresh=at, invert=ai), k * 0.5))
         assert ah == 12, f"agar: only {ah}/12 tracked"
         print(f"agar frame: locked area={ab[0]:.0f} px elong={ab[3]:.1f}, 12/12 tracked")
+
+    # Long run: 5 real minutes at 2 Hz = 600 samples, with light drifting the whole
+    # way. Checks that the lock does not RATCHET - the size gate is anchored to the
+    # blob we locked at t=0, so a 3x-per-step tolerance cannot compound into the
+    # tracker walking off onto ever-bigger junk.
+    def longrun(i):
+        f = np.full((H, W, 3), 90, np.uint8)
+        cv2.circle(f, (CX, CY), R, (150 + i // 90,) * 3, -1)
+        cv2.circle(f, (CX, CY), R, (205, 205, 205), 3)
+        cv2.ellipse(f, (CX + 40, CY - 60), (16, 6), 55, 0, 360, (238,) * 3, -1)
+        ang = i / 190.0                                   # larva loops round the dish
+        x = int(CX + 95 * math.cos(ang)) - 30
+        y = int(CY + 95 * math.sin(ang))
+        cv2.ellipse(f, (x, y), (11, 5), int(20 + 40 * math.sin(ang)), 0, 360,
+                    (232 - i // 120,) * 3, -1)
+        return cv2.cvtColor(mask_dish(f, *cir), cv2.COLOR_BGR2GRAY), (x, y)
+
+    g0, p0 = longrun(0)
+    bx, by, bp = p0[0], p0[1], 30                      # a box round the larva, as you drag
+    lk = next(((i, t2, (bb[0], bb[1] + bx - bp, bb[2] + by - bp, bb[3], bb[4],
+                        bb[5] + [bx - bp, by - bp]))
+               for i, t2, bb in rank(g0[by - bp:by + bp, bx - bp:bx + bp], cfg0)[:40]), None)
+    assert lk, "long run: could not lock at t=0"
+    assert math.hypot(lk[2][1] - p0[0], lk[2][2] - p0[1]) < 12, \
+        f"long run: box lock landed at ({lk[2][1]:.0f},{lk[2][2]:.0f}), larva at {p0}"
+    RL = {"pts": [], "last": (lk[2][1], lk[2][2]), "area": lk[2][0], "area0": lk[2][0],
+          "misses": 0, "thresh": lk[1], "invert": lk[0]}
+    a0, drift_err, miss = lk[2][0], [], 0
+    for k in range(600):
+        gk, pk = longrun(k)
+        h = step_one(RL, gk, dict(cfg0, thresh=RL["thresh"], invert=RL["invert"]), k * 0.5)
+        if h is None:
+            miss += 1
+        else:
+            drift_err.append(math.hypot(RL["last"][0] - pk[0], RL["last"][1] - pk[1]))
+    early = sum(drift_err[:50]) / max(len(drift_err[:50]), 1)
+    late = sum(drift_err[-50:]) / max(len(drift_err[-50:]), 1)
+    print(f"long run: {600 - miss}/600 samples tracked, area {a0:.0f} -> {RL['area']:.0f} px, "
+          f"positional error early {early:.1f} px, late {late:.1f} px")
+    assert miss <= 60, f"long run: lost {miss}/600 samples"
+    assert 0.4 * a0 <= RL["area"] <= 2.5 * a0, \
+        f"long run: area ratcheted {a0:.0f} -> {RL['area']:.0f}"
+    assert late < early + 6, \
+        f"long run: accuracy decayed over time ({early:.1f} px -> {late:.1f} px)"
 
     srv.shutdown()
     page = open(os.path.join(HERE, "index.html")).read()

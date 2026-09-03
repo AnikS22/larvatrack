@@ -82,9 +82,14 @@
     <label>max jump px <input type="number" id="max_jump" value="60"></label>
     <label>noise floor px <input type="number" id="noise_floor" value="1.5" step="0.1"></label>
     <label>sample Hz <input type="number" id="sample_hz" value="2" step="0.5"></label>
+    <label>dish edge kept % <input type="number" id="edge_pct" value="90" min="50" max="100"></label>
     <label>larva is brighter <input type="checkbox" id="invert" style="width:auto"></label>
     <p class="hint">Each larva keeps the polarity and threshold found when you added
-      it. These are only the defaults used for the next one.</p>
+      it. These are only the defaults used for the next one.<br>
+      <b>dish edge kept %</b>: 90 blanks the outer 10% of the radius (~3&nbsp;mm on a
+      60&nbsp;mm dish) to hide the rim highlight. If your larva wall-follows and goes
+      LOST at the edge, raise it toward 100 — but watch the outline, since keeping
+      the rim can let the lock jump to something else.</p>
   </fieldset>
 </div>
 
@@ -103,7 +108,7 @@ let tracks = {};                      // id -> [[x,y],...] for drawing
 let unit = 'px';
 let rec = null, chunks = [], recMime = '';
 
-const KNOBS = ['mm_per_px','thresh','min_area','max_area','max_jump','noise_floor','sample_hz'];
+const KNOBS = ['mm_per_px','thresh','min_area','max_area','max_jump','noise_floor','sample_hz','edge_pct'];
 const cfg = () => {
   const o = {invert: $('invert').checked ? 1 : 0};
   KNOBS.forEach(k => o[k] = parseFloat($(k).value) || 0);
