@@ -51,6 +51,18 @@ D = dict(
                         # so keep this IDENTICAL across every animal you compare
 )
 
+def kernels(c):
+    """Morphology kernels scaled to the SMALLEST larva we accept.
+
+    Fixed 5px/7px kernels were tuned for a larva ~30 px wide. On a wide shot the
+    animal is 4-5 px across and a 5x5 opening deletes it outright - the mask has
+    the larva in it, the cleanup step removes it, and nothing is ever found."""
+    width = math.sqrt(max(c["min_area"], 1) / 3.0)       # a larva is ~3x longer than wide
+    ko = int(max(1, min(7, round(width / 1.5))))
+    kc = int(max(3, min(11, round(width))))
+    return (np.ones((ko, ko), np.uint8) if ko > 1 else None,
+            np.ones((kc + (kc + 1) % 2,) * 2, np.uint8))
+
 def detect(gray, c):
     """Blobs that could be the larva, biggest first.
 
@@ -67,8 +79,10 @@ def detect(gray, c):
         _, m = cv2.threshold(flat, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     if c["invert"]:
         m = cv2.bitwise_not(m)
-    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    ko, kc = kernels(c)
+    if ko is not None:
+        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, ko)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kc)
     out = []
     for cnt in cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
         a = cv2.contourArea(cnt)
@@ -95,6 +109,26 @@ def mask_dish(frame, cx, cy, r, shrink=0.90):
     fill = cv2.mean(frame, m)[:3]
     out = np.full_like(frame, np.uint8(fill))
     return np.where(m[:, :, None] > 0, frame, out)
+
+def find_plates(gray, want=8):
+    """Every petri dish rim in the frame, biggest-confidence first."""
+    g = cv2.medianBlur(gray, 5)
+    h, w = g.shape
+    lo, hi = min(h, w) // 10, min(h, w) // 2
+    for method, p1, p2 in ((cv2.HOUGH_GRADIENT_ALT, 300, 0.72), (cv2.HOUGH_GRADIENT, 120, 55)):
+        cir = cv2.HoughCircles(g, method, 1.5, min(h, w) // 4, param1=p1, param2=p2,
+                               minRadius=lo, maxRadius=hi)
+        if cir is None:
+            continue
+        out = []
+        for x, y, r in cir[0]:
+            if all(math.hypot(x - a, y - b) > 0.7 * max(r, c) for a, b, c in out):
+                out.append((float(x), float(y), float(r)))
+            if len(out) >= want:
+                break
+        if out:
+            return out
+    return []
 
 def find_plate(gray):
     """The petri dish rim, by Hough circle. Gives the tracking area AND, with the
@@ -173,10 +207,15 @@ def rank(gray, c, near=None):
 
     scored = []
     for inv, t, b in candidates(gray, c):
+        # Bin the contrast, then prefer the BIGGER blob. Ranking on raw contrast
+        # picks the brightest sliver of the animal's core; binning lets a slightly
+        # softer threshold that captures the whole body win, which gives a real
+        # outline and a steadier centroid.
         if near is None:
-            key = (-b[4],)                          # highest contrast off the dish
+            key = (-round(b[4] / 5), -b[0])
         else:
-            key = (round(math.hypot(b[1] - near[0], b[2] - near[1]) / 5), -b[4])
+            key = (round(math.hypot(b[1] - near[0], b[2] - near[1]) / 5),
+                   -round(b[4] / 5), -b[0])
         scored.append((key, inv, t,
                        (b[0], b[1] + off[0], b[2] + off[1], b[3], b[4], b[5] + off)))
     scored.sort(key=lambda s: s[0])
@@ -278,20 +317,31 @@ def step_one(L, gray, c, t, taken=()):
         L["misses"] = L.get("misses", 0) + 1
     return hit
 
+def larva_cfg(S, L):
+    """Config for one larva: its own polarity/threshold, and its own DISH's scale -
+    two dishes in frame can sit at different distances, so mm/px is per dish."""
+    d = S["dishes"].get(L.get("dish"))
+    return dict(S["cfg"], thresh=L["thresh"], invert=L["invert"],
+                mm_per_px=(d or S["cfg"])["mm_per_px"] if d else S["cfg"]["mm_per_px"],
+                min_area=(d["min_area"] if d else S["cfg"]["min_area"]),
+                max_area=(d["max_area"] if d else S["cfg"]["max_area"]))
+
 def step_all(S, frame, t):
-    """One sample for every larva on the dish. Returns per-larva results."""
+    """One sample for every larva in every dish. Full-frame coordinates throughout."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     S["frame"], out, taken = frame, [], []
     for lid, L in S["larvae"].items():
-        hit = step_one(L, gray, dict(S["cfg"], thresh=L["thresh"], invert=L["invert"]),
-                       t, taken)
+        c = larva_cfg(S, L)
+        hit = step_one(L, gray, c, t, taken)
         if hit:
             taken.append(hit[1:3])
+        d = S["dishes"].get(L.get("dish"))
         out.append({"id": lid, "name": L["name"], "color": L["color"],
+                    "dish": L.get("dish"), "dish_name": d["name"] if d else "",
                     "found": hit is not None,
                     "x": hit[1] if hit else None, "y": hit[2] if hit else None,
                     "poly": hit[5].tolist() if hit is not None else None,
-                    "path": round(path_length(L["pts"], S["cfg"])[0], 2),
+                    "path": round(path_length(L["pts"], c)[0], 2),
                     "n": len(L["pts"])})
     return out
 
@@ -327,7 +377,8 @@ def save(stem, pts, frame, c):
 # ---- localhost app -----------------------------------------------------------
 # ponytail: one global tracking state. It's a single-user tool on 127.0.0.1;
 # add a session dict if you ever want two plates in two tabs.
-S = {"larvae": {}, "next_id": 1, "frame": None, "cfg": dict(D)}
+S = {"dishes": {}, "larvae": {}, "next_id": 1, "next_dish": 1,
+     "frame": None, "cfg": dict(D)}
 
 PALETTE = ["#ff4d4d", "#4dd2ff", "#7dff4d", "#ffd24d", "#e04dff", "#4d6bff",
            "#ff934d", "#4dffc3"]
@@ -337,31 +388,39 @@ def bgr(hexcolor):
     return tuple(int(h[i:i + 2], 16) for i in (4, 2, 0))
 
 def save(stem, S):
-    c = S["cfg"]
-    unit = "mm" if c["mm_per_px"] != 1.0 else "px"
+    unit = "mm" if any(d["mm_per_px"] != 1.0 for d in S["dishes"].values()) \
+                   or S["cfg"]["mm_per_px"] != 1.0 else "px"
     rows = []
+    dn = lambda L: (S["dishes"].get(L.get("dish")) or {}).get("name", "")
     with open(stem + "_tracks.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["larva", "name", "t_s", "x_px", "y_px", f"cum_path_{unit}"])
+        w.writerow(["dish", "larva", "name", "t_s", "x_px", "y_px", f"cum_path_{unit}"])
         for lid, L in S["larvae"].items():
+            c = larva_cfg(S, L)
             for (t, x, y), cum in zip(L["pts"], path_length(L["pts"], c)[1]):
-                w.writerow([lid, L["name"], f"{t:.2f}", f"{x:.1f}", f"{y:.1f}", f"{cum:.2f}"])
+                w.writerow([dn(L), lid, L["name"], f"{t:.2f}",
+                            f"{x:.1f}", f"{y:.1f}", f"{cum:.2f}"])
     with open(stem + "_summary.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["larva", "name", "duration_s", "samples", "mm_per_px",
+        w.writerow(["dish", "larva", "name", "duration_s", "samples", "mm_per_px",
                     f"path_length_{unit}", f"mean_speed_{unit}_per_s"])
         for lid, L in S["larvae"].items():
             if len(L["pts"]) < 2:
                 continue
+            c = larva_cfg(S, L)
             dur = L["pts"][-1][0] - L["pts"][0][0]
             total = path_length(L["pts"], c)[0]
-            w.writerow([lid, L["name"], f"{dur:.1f}", len(L["pts"]), c["mm_per_px"],
-                        f"{total:.2f}", f"{total / dur:.3f}" if dur else ""])
-            rows.append({"name": L["name"], "path": round(total, 2),
+            w.writerow([dn(L), lid, L["name"], f"{dur:.1f}", len(L["pts"]),
+                        c["mm_per_px"], f"{total:.2f}", f"{total / dur:.3f}" if dur else ""])
+            rows.append({"name": L["name"], "dish": dn(L), "path": round(total, 2),
                          "duration": round(dur, 1), "samples": len(L["pts"])})
     frame = S.get("frame")
     if frame is not None:
         im = frame.copy()
+        for d in S["dishes"].values():
+            cv2.circle(im, (int(d["cx"]), int(d["cy"])), int(d["r"]), (90, 200, 90), 2)
+            cv2.putText(im, d["name"], (int(d["cx"] - d["r"]), int(d["cy"] - d["r"]) - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, .6, (90, 200, 90), 2)
         for L in S["larvae"].values():
             if len(L["pts"]) > 1:
                 xy = np.array([[x, y] for _, x, y in L["pts"]], np.int32)
@@ -711,6 +770,29 @@ def demo():
         f"drift: ended at x={DL['last'][0]:.0f}, expected ~{endx} - it slid onto the smear"
     print(f"drift: 20/20 tracked through fading contrast, threshold "
           f"{d0[1]} -> {DL['thresh']}")
+
+    # Agar plate off the rig: washed-out (std 8), larva only ~5 px wide and 68 px.
+    # A fixed 5x5 opening deleted it entirely - mask had it, cleanup removed it.
+    agar = os.path.join(HERE, "testframe_agar.png")
+    if os.path.exists(agar):
+        ag = cv2.cvtColor(cv2.imread(agar), cv2.COLOR_BGR2GRAY)
+        amp = 60 / 396.0
+        alo, ahi = area_bounds(amp)
+        ac = dict(D, mm_per_px=amp, min_area=alo, max_area=ahi)
+        AX, AY, ap = 306, 111, 30                      # the larva, as boxed by hand
+        hit = next(((i, t2, (bb[0], bb[1] + AX - ap, bb[2] + AY - ap, bb[3], bb[4],
+                             bb[5] + [AX - ap, AY - ap]))
+                    for i, t2, bb in rank(ag[AY - ap:AY + ap, AX - ap:AX + ap], ac)[:40]), None)
+        assert hit, "agar: nothing larva-shaped in the box (morphology eating it again?)"
+        ai, at, ab = hit
+        assert survives_window(ag, ai, at, ab, ac), "agar: lock does not survive the window"
+        assert math.hypot(ab[1] - AX, ab[2] - AY) < 12, \
+            f"agar: locked at ({ab[1]:.0f},{ab[2]:.0f}), larva is at ({AX},{AY})"
+        AL = {"pts": [], "last": (ab[1], ab[2]), "area": ab[0], "misses": 0}
+        ah = sum(1 for k in range(12)
+                 if step_one(AL, ag, dict(ac, thresh=at, invert=ai), k * 0.5))
+        assert ah == 12, f"agar: only {ah}/12 tracked"
+        print(f"agar frame: locked area={ab[0]:.0f} px elong={ab[3]:.1f}, 12/12 tracked")
 
     srv.shutdown()
     page = open(os.path.join(HERE, "index.html")).read()

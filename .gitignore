@@ -6,3 +6,4 @@ run_*.webm
 # scratch capture from the lock button
 lock_debug.png
 __pycache__/
+.DS_Store
