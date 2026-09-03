@@ -1,0 +1,357 @@
+<!doctype html>
+<meta charset="utf-8"><title>larvatrack</title>
+<style>
+  body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#141414;color:#eee;display:flex;gap:16px;padding:16px}
+  #left{flex:0 0 auto} #right{flex:1;max-width:360px}
+  .wrap{position:relative;display:inline-block;background:#000}
+  video,canvas.ov{display:block;max-width:70vw}
+  canvas.ov{position:absolute;inset:0;cursor:crosshair}
+  h1{font-size:15px;margin:0 0 10px;letter-spacing:.08em;text-transform:uppercase;color:#8f8}
+  fieldset{border:1px solid #333;border-radius:6px;margin:0 0 12px;padding:10px}
+  legend{color:#8f8;font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+  label{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:5px 0}
+  input[type=number],select,input[type=text]{background:#222;color:#eee;border:1px solid #444;border-radius:4px;padding:4px;width:88px}
+  select{width:100%}
+  button{background:#2a2a2a;color:#eee;border:1px solid #555;border-radius:5px;padding:7px 12px;cursor:pointer;font-size:13px}
+  button:hover{background:#3a3a3a} button.go{background:#2c6;color:#000;border-color:#2c6;font-weight:600}
+  button.on{background:#046;border-color:#4af}
+  .hint{color:#888;font-size:11.5px;margin:6px 0 0}
+  .bad{color:#f96} .good{color:#7d7}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  td{padding:3px 2px;vertical-align:middle}
+  td.p{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  input[type=color]{width:26px;height:22px;padding:0;border:1px solid #444;background:#222}
+  input.nm{width:100%}
+  .x{background:none;border:none;color:#888;cursor:pointer;font-size:15px;padding:0 4px}
+  .x:hover{color:#f96}
+  #sub{color:#999;font-size:12px;min-height:1.4em}
+</style>
+
+<div id="left">
+  <div class="wrap">
+    <video id="v" playsinline muted></video>
+    <canvas id="ov" class="ov"></canvas>
+  </div>
+  <p class="hint" id="hint">Pick a camera, then find the dish.</p>
+</div>
+
+<div id="right">
+  <h1>larvatrack</h1>
+
+  <fieldset><legend>Camera</legend>
+    <select id="cams"></select>
+    <p class="hint">iPhone missing? Unlock it, same Apple ID, Wi-Fi + Bluetooth on, then Rescan.</p>
+    <button id="rescan">Rescan</button>
+  </fieldset>
+
+  <fieldset><legend>Dish</legend>
+    <label>dish diameter (mm) <input type="number" id="dish_mm" value="60" step="0.5"></label>
+    <button id="finddish" class="go">Find dish</button>
+    <button id="dishmode">Drag = dish area</button>
+    <p class="hint" id="dishhint">Finds the rim, masks everything outside it, and
+      gets mm/px from the diameter you typed.</p>
+    <label>mm per pixel <input type="number" id="mm_per_px" value="1" step="0.00001"></label>
+    <button id="clearroi">Use whole frame</button>
+  </fieldset>
+
+  <fieldset><legend>Larvae</legend>
+    <button id="larvamode">Drag = add larva</button>
+    <p class="hint" id="addhint">Drag a box round a larva — it finds the animal
+      inside your box and starts a track. Repeat for each one.</p>
+    <table><tbody id="list"></tbody></table>
+    <p class="hint" id="count">no larvae yet</p>
+    <p class="hint" id="lasthint"></p>
+  </fieldset>
+
+  <fieldset><legend>Track</legend>
+    <div id="sub">idle</div>
+    <button id="go" class="go">Start</button>
+    <button id="resetall">Reset paths</button>
+    <button id="save">Save</button>
+    <label style="margin-top:6px">record raw video backup
+      <input type="checkbox" id="record" checked style="width:auto"></label>
+    <p class="hint" id="rechint">Records the camera feed with <b>no path drawn on it</b>,
+      saved beside the CSVs when you press Stop.</p>
+    <p class="hint" id="saved"></p>
+  </fieldset>
+
+  <fieldset><legend>Detection</legend>
+    <label>threshold (0 = auto) <input type="number" id="thresh" value="0" min="0" max="254"></label>
+    <label>min area px <input type="number" id="min_area" value="30"></label>
+    <label>max area px <input type="number" id="max_area" value="8000"></label>
+    <label>max jump px <input type="number" id="max_jump" value="60"></label>
+    <label>noise floor px <input type="number" id="noise_floor" value="1.5" step="0.1"></label>
+    <label>sample Hz <input type="number" id="sample_hz" value="2" step="0.5"></label>
+    <label>larva is brighter <input type="checkbox" id="invert" style="width:auto"></label>
+    <p class="hint">Each larva keeps the polarity and threshold found when you added
+      it. These are only the defaults used for the next one.</p>
+  </fieldset>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+window.onerror = (m,src,l) => { const e = $('lasthint');
+  if (e) e.innerHTML = `<span class=bad>page error: ${m} (line ${l})</span>`; };
+window.onunhandledrejection = ev => { const e = $('lasthint');
+  if (e) e.innerHTML = `<span class=bad>page error: ${ev.reason && ev.reason.message || ev.reason}</span>`; };
+const v = $('v'), ov = $('ov'), ctx = ov.getContext('2d');
+const grab = document.createElement('canvas'), gctx = grab.getContext('2d');
+let stream = null, running = false, timer = null, t0 = 0;
+let roi = null, circle = null, drag = null, mode = 'dish';
+let larvae = [];                      // [{id,name,color,found,x,y,poly,path}]
+let tracks = {};                      // id -> [[x,y],...] for drawing
+let unit = 'px';
+let rec = null, chunks = [], recMime = '';
+
+const KNOBS = ['mm_per_px','thresh','min_area','max_area','max_jump','noise_floor','sample_hz'];
+const cfg = () => {
+  const o = {invert: $('invert').checked ? 1 : 0};
+  KNOBS.forEach(k => o[k] = parseFloat($(k).value) || 0);
+  return o;
+};
+const dishArg = () => circle ? `&dish_r=${circle.r.toFixed(1)}` : '';
+const qs = () => new URLSearchParams(cfg()) + dishArg();
+const area = () => roi || {x:0, y:0, w:v.videoWidth, h:v.videoHeight};
+async function shot(r){
+  grab.width = r.w; grab.height = r.h;
+  gctx.drawImage(v, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+  return new Promise(res => grab.toBlob(res, 'image/jpeg', 0.9));
+}
+
+// ---- cameras ---------------------------------------------------------------
+async function listCams(){
+  try { (await navigator.mediaDevices.getUserMedia({video:true})).getTracks().forEach(t=>t.stop()); }
+  catch(e){ $('hint').innerHTML = '<span class=bad>Camera permission denied. '
+    + 'System Settings &rarr; Privacy &amp; Security &rarr; Camera, then reload.</span>'; return; }
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+  $('cams').innerHTML = devs.map((d,i)=>
+    `<option value="${d.deviceId}">${d.label || ('camera '+(i+1))}</option>`).join('');
+  const iphone = devs.findIndex(d=>/iphone|continuity/i.test(d.label));
+  if (iphone >= 0) $('cams').selectedIndex = iphone;
+  await open();
+}
+async function open(){
+  if (stream) stream.getTracks().forEach(t=>t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({
+    video:{deviceId:{exact:$('cams').value}, width:{ideal:1920}, height:{ideal:1080}}});
+  v.srcObject = stream; await v.play();
+  ov.width = v.videoWidth; ov.height = v.videoHeight;
+  ov.style.width = v.clientWidth+'px'; ov.style.height = v.clientHeight+'px';
+  roi = null; circle = null; paint();
+}
+$('cams').onchange = open;
+$('rescan').onclick = listCams;
+
+// ---- dish ------------------------------------------------------------------
+$('finddish').onclick = async () => {
+  const search = area(), mm = parseFloat($('dish_mm').value) || 0;
+  $('dishhint').textContent = 'looking for the rim…';
+  const d = await (await fetch(`/plate?dish_mm=${mm}&` + new URLSearchParams(cfg()),
+                   {method:'POST', body:await shot(search)})).json();
+  if (!d.found){
+    $('dishhint').innerHTML = '<span class=bad>no rim found.</span> Switch to '
+      + '<b>Drag = dish area</b>, box the dish yourself, then press again.';
+    return;
+  }
+  circle = {cx:search.x + d.cx, cy:search.y + d.cy, r:d.r};
+  roi = {x:Math.round(circle.cx-d.r), y:Math.round(circle.cy-d.r),
+         w:Math.round(2*d.r), h:Math.round(2*d.r)};
+  if (d.mm_per_px) $('mm_per_px').value = d.mm_per_px;
+  if (d.min_area){ $('min_area').value = d.min_area; $('max_area').value = d.max_area; }
+  $('dishhint').innerHTML = `<span class=good>dish r=${d.r.toFixed(0)} px`
+    + (d.mm_per_px ? ` &rarr; ${d.mm_per_px} mm/px, larva ${d.min_area}–${d.max_area} px` : '')
+    + '</span>';
+  setMode('larva');
+  $('hint').innerHTML = 'Now <b>drag a box round each larva</b>.';
+  paint();
+};
+$('clearroi').onclick = () => { roi = null; circle = null; setMode('dish'); paint(); };
+function setMode(m){
+  mode = m;
+  $('dishmode').classList.toggle('on', m==='dish');
+  $('larvamode').classList.toggle('on', m==='larva');
+}
+$('dishmode').onclick = () => setMode('dish');
+$('larvamode').onclick = () => setMode('larva');
+
+// ---- dragging --------------------------------------------------------------
+const toVid = e => { const r = ov.getBoundingClientRect();
+  return [(e.clientX-r.left)*ov.width/r.width, (e.clientY-r.top)*ov.height/r.height]; };
+ov.onmousedown = e => { const p = toVid(e); drag = {x:p[0], y:p[1], w:0, h:0}; };
+window.addEventListener('mousemove', e => { if(!drag) return; const p = toVid(e);
+  drag.w = p[0]-drag.x; drag.h = p[1]-drag.y; paint(); });
+window.addEventListener('mouseup', async () => {
+  if (!drag) return;
+  const b = {x:Math.min(drag.x,drag.x+drag.w), y:Math.min(drag.y,drag.y+drag.h),
+             w:Math.abs(drag.w), h:Math.abs(drag.h)};
+  drag = null;
+  if (b.w < 10 || b.h < 10){ paint(); return; }
+  if (mode === 'dish'){
+    roi = {x:Math.round(b.x), y:Math.round(b.y), w:Math.round(b.w), h:Math.round(b.h)};
+    circle = null;
+    $('dishhint').textContent = `search area ${roi.w}x${roi.h} px — press Find dish, or `
+      + 'switch to add-larva mode and box the animals directly.';
+    paint(); return;
+  }
+  await addLarva(b);
+});
+
+async function addLarva(b){
+  const a = area();                      // box coords are relative to what we post
+  const p = new URLSearchParams({bx:Math.round(b.x-a.x), by:Math.round(b.y-a.y),
+                                bw:Math.round(b.w), bh:Math.round(b.h)});
+  $('lasthint').textContent = 'looking inside your box…';
+  let r;
+  try {
+    r = await (await fetch(`/add?${qs()}&${p}`, {method:'POST', body:await shot(a)})).json();
+  } catch(err){
+    $('lasthint').innerHTML = `<span class=bad>add failed: ${err.message}</span>`; return;
+  }
+  if (!r.found){
+    $('lasthint').innerHTML = `<span class=bad>${r.why || 'nothing found'}</span>`;
+    paint(); return;
+  }
+  if (larvae.some(L => L.id === r.id)){                 // server reused an id
+    $('lasthint').innerHTML = '<span class=bad>duplicate id from server</span>'; return;
+  }
+  larvae.push(r); tracks[r.id] = [[r.x, r.y]];
+  $('lasthint').innerHTML = `<span class=good>${r.name}: area ${r.area} px, ${r.elong}:1, `
+    + `${r.invert ? 'pale on dark' : 'dark on pale'}, threshold ${r.thresh}.</span>`;
+  renderList(); paint();
+}
+
+function renderList(){
+  $('list').innerHTML = larvae.map(L => `<tr>
+    <td><input type="color" value="${L.color}" data-id="${L.id}" class="col"></td>
+    <td><input type="text" class="nm" value="${L.name}" data-id="${L.id}"></td>
+    <td class="p" id="p${L.id}">—</td>
+    <td><button class="x" data-id="${L.id}">&times;</button></td></tr>`).join('');
+  $('count').textContent = larvae.length
+    ? `${larvae.length} larva${larvae.length>1?'e':''} — drag another box to add more`
+    : 'no larvae yet';
+  $('list').querySelectorAll('.x').forEach(b => b.onclick = async () => {
+    await fetch('/remove?id=' + b.dataset.id, {method:'POST'});
+    larvae = larvae.filter(L => L.id !== b.dataset.id);
+    delete tracks[b.dataset.id]; renderList(); paint();
+  });
+  const push = async el => {
+    const L = larvae.find(x => x.id === el.dataset.id); if (!L) return;
+    if (el.type === 'color') L.color = el.value; else L.name = el.value;
+    await fetch(`/rename?id=${L.id}&name=${encodeURIComponent(L.name)}`
+                + `&color=${encodeURIComponent(L.color)}`, {method:'POST'});
+    paint();
+  };
+  $('list').querySelectorAll('.col,.nm').forEach(el => el.onchange = () => push(el));
+}
+
+// ---- drawing ---------------------------------------------------------------
+function paint(){
+  ctx.clearRect(0,0,ov.width,ov.height);
+  if (drag){ ctx.strokeStyle='#fc0'; ctx.lineWidth=2;
+    ctx.strokeRect(drag.x, drag.y, drag.w, drag.h); }
+  else if (mode==='dish' && roi && !circle){ ctx.strokeStyle='#2c6'; ctx.lineWidth=2;
+    ctx.strokeRect(roi.x, roi.y, roi.w, roi.h); }
+  if (circle){ ctx.strokeStyle='#2c6'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(circle.cx, circle.cy, circle.r, 0, 7); ctx.stroke(); }
+  const a = area(), ox = a.x, oy = a.y;
+  larvae.forEach(L => {
+    const path = tracks[L.id] || [];
+    ctx.strokeStyle = L.color; ctx.lineWidth = 2;
+    if (path.length > 1){
+      ctx.beginPath();
+      path.forEach((p,i)=> i ? ctx.lineTo(p[0]+ox,p[1]+oy) : ctx.moveTo(p[0]+ox,p[1]+oy));
+      ctx.stroke();
+    }
+    if (L.poly && L.poly.length > 2){                  // the animal's own outline
+      ctx.lineWidth = L.found === false ? 1 : 2;
+      ctx.setLineDash(L.found === false ? [4,3] : []); // dashed = lost this sample
+      ctx.beginPath();
+      L.poly.forEach((p,i)=> i ? ctx.lineTo(p[0]+ox,p[1]+oy) : ctx.moveTo(p[0]+ox,p[1]+oy));
+      ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+    }
+    const last = path[path.length-1];
+    if (last){ ctx.fillStyle = L.color; ctx.font = '13px system-ui';
+      ctx.fillText(L.name, last[0]+ox+10, last[1]+oy-8); }
+  });
+}
+
+// ---- tracking loop ---------------------------------------------------------
+async function tick(){
+  if (!running) return;
+  const t = (performance.now() - t0)/1000;
+  try {
+    const res = await (await fetch(`/frame?t=${t}&${qs()}`,
+                       {method:'POST', body:await shot(area())})).json();
+    unit = res.unit;
+    let live = 0;
+    res.larvae.forEach(r => {
+      const L = larvae.find(x => x.id === r.id); if (!L) return;
+      Object.assign(L, r);
+      if (r.found){ (tracks[r.id] = tracks[r.id] || []).push([r.x, r.y]); live++; }
+      const cell = $('p'+r.id);
+      if (cell) cell.innerHTML = `${r.path.toFixed(1)} ${unit}`
+        + (r.found ? '' : ' <span class=bad>LOST</span>');
+    });
+    $('sub').innerHTML = `${t.toFixed(0)} s · ${live}/${res.larvae.length} tracking`;
+    paint();
+  } catch(e){ $('sub').innerHTML = '<span class=bad>server gone — is larvatrack.py running?</span>'; }
+}
+// ---- raw video backup ------------------------------------------------------
+// Records the CAMERA stream, not the canvas, so the backup has no path drawn on
+// it - it can be re-analysed from scratch if the live run drifts.
+function startRec(){
+  if (!stream || rec) return;
+  recMime = ['video/mp4', 'video/webm;codecs=vp9', 'video/webm']
+    .find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
+  if (!recMime){ $('rechint').innerHTML = '<span class=bad>this browser will not record video</span>'; return; }
+  chunks = [];
+  rec = new MediaRecorder(stream, {mimeType: recMime});
+  rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  rec.start(1000);
+  $('rechint').innerHTML = '<span class=good>recording raw video…</span>';
+}
+async function stopRec(){
+  if (!rec) return;
+  const done = new Promise(r => rec.onstop = r);
+  rec.stop(); await done; rec = null;
+  const blob = new Blob(chunks, {type: recMime});
+  chunks = [];
+  if (!blob.size){ $('rechint').textContent = 'no video captured'; return; }
+  $('rechint').textContent = `uploading ${(blob.size/1e6).toFixed(1)} MB…`;
+  try {
+    const d = await (await fetch(`/video?mime=${encodeURIComponent(recMime)}`,
+                     {method:'POST', body:blob})).json();
+    $('rechint').innerHTML = `<span class=good>saved ${d.file} `
+      + `(${(d.bytes/1e6).toFixed(1)} MB, no overlay)</span>`;
+  } catch(e){ $('rechint').innerHTML = `<span class=bad>video upload failed: ${e.message}</span>`; }
+}
+
+$('go').onclick = () => {
+  if (!larvae.length){ $('sub').innerHTML = '<span class=bad>add a larva first</span>'; return; }
+  running = !running;
+  if (running && $('record').checked) startRec(); else stopRec();
+  $('go').textContent = running ? 'Stop' : 'Start';
+  $('go').classList.toggle('go', !running);
+  clearInterval(timer);
+  if (running){
+    if (!Object.values(tracks).some(p => p.length > 1)) t0 = performance.now();
+    timer = setInterval(tick, 1000/(parseFloat($('sample_hz').value)||2));
+  }
+};
+$('resetall').onclick = async () => {
+  await fetch('/reset', {method:'POST'});
+  larvae.forEach(L => { tracks[L.id] = L.x != null ? [[L.x, L.y]] : [];
+    const c = $('p'+L.id); if (c) c.textContent = '—'; });
+  t0 = performance.now(); $('sub').textContent = 'reset'; $('saved').textContent = '';
+  paint();
+};
+$('save').onclick = async () => {
+  const d = await (await fetch('/save?' + qs(), {method:'POST'})).json();
+  $('saved').innerHTML = d.error ? `<span class=bad>${d.error}</span>`
+    : `<span class=good>saved ${d.stem}_tracks.csv, _summary.csv, _overlay.png<br>`
+      + d.larvae.map(L => `${L.name}: ${L.path} ${d.unit} (${L.samples} samples)`).join('<br>')
+      + '</span>';
+};
+setMode('dish');
+listCams();
+</script>

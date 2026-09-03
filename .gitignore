@@ -1,0 +1,8 @@
+# run outputs
+run_*.csv
+run_*.png
+run_*.mp4
+run_*.webm
+# scratch capture from the lock button
+lock_debug.png
+__pycache__/
