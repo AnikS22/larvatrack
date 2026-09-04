@@ -45,14 +45,33 @@ D = dict(
     thresh=0,           # 0 = auto (Otsu). Set 1-254 if auto picks up junk.
     min_area=30,        # px, ignore specks, condensation, yeast flecks
     max_area=8000,      # px, ignore plate edge, shadows, your hand
-    max_jump=60,        # px between samples; further than this is not the larva
-    noise_floor=1.5,    # px, ignore sub-jitter steps (else path length inflates)
+    max_speed=4.0,      # mm/s ceiling. A larva crawls ~1 mm/s; anything faster is
+                        # the tracker snapping to a different object, not an animal.
+    max_jump=60,        # px fallback when there is no mm/px scale yet
+    noise_floor=1.5,    # px floor; see noise_px() - it also enforces a mm floor,
+                        # because centroid jitter at 2 Hz otherwise accumulates into
+                        # tens of mm of pure noise over a 5 minute run
     edge_pct=90,        # % of the dish radius kept. Larvae wall-follow, so raising
                         # this recovers the outer rim - but keeping more of the rim
                         # also gave a smear-swap in the self-check, so it is opt-in.
     sample_hz=2.0,      # sampling rate; larval path length is scale-dependent,
                         # so keep this IDENTICAL across every animal you compare
 )
+
+def background(gray, sigma=None):
+    """Blurred background estimate, computed on a downscaled copy.
+
+    A sigma-51 Gaussian needs a ~300-tap kernel: 186 ms on a 160 px window, which
+    was essentially the entire cost of tracking. Downscaling first makes it ~2 ms
+    for a background estimate that is, by definition, low-frequency anyway."""
+    sigma = sigma or FLAT_SIGMA
+    f = max(1, int(sigma / 4))
+    if f == 1:
+        return cv2.GaussianBlur(gray, (0, 0), sigma)
+    h, w = gray.shape[:2]
+    small = cv2.resize(gray, (max(2, w // f), max(2, h // f)), interpolation=cv2.INTER_AREA)
+    small = cv2.GaussianBlur(small, (0, 0), max(1.0, sigma / f))
+    return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
 
 def kernels(c):
     """Morphology kernels scaled to the SMALLEST larva we accept.
@@ -74,7 +93,7 @@ def detect(gray, c):
     gray = cv2.medianBlur(gray, 5)                                     # kill speckle
     # High-pass around mid-grey, NOT a divide: divide pins the background at 255,
     # which clips every pale object away. Larvae here are paler than the dish.
-    bg = cv2.GaussianBlur(gray, (0, 0), FLAT_SIGMA)
+    bg = background(gray)
     flat = np.clip(gray.astype(np.int16) - bg.astype(np.int16) + 128, 0, 255).astype(np.uint8)
     if c["thresh"]:
         _, m = cv2.threshold(flat, c["thresh"], 255, cv2.THRESH_BINARY_INV)
@@ -111,8 +130,10 @@ def mask_dish(frame, cx, cy, r, shrink=0.97):
     the most ground."""
     m = np.zeros(frame.shape[:2], np.uint8)
     cv2.circle(m, (int(cx), int(cy)), int(r * shrink), 255, -1)
-    fill = cv2.mean(frame, m)[:3]
-    out = np.full_like(frame, np.uint8(fill))
+    mean = cv2.mean(frame, m)
+    if frame.ndim == 2:                              # grayscale, not just BGR
+        return np.where(m > 0, frame, np.uint8(mean[0]))
+    out = np.full_like(frame, np.uint8(mean[:3]))
     return np.where(m[:, :, None] > 0, frame, out)
 
 def find_plates(gray, want=8):
@@ -261,14 +282,46 @@ def pick_larva(blobs, last, area, c, taken=()):
     return min(near, key=lambda b: math.hypot(b[1] - last[0], b[2] - last[1])
                                    + 40 * abs(b[0] - a0) / max(a0, 1))
 
+NOISE_MM = 0.15                     # centroid wobble on a larva-sized blob
+
 def path_length(pts, c):
-    """Cumulative mm, ignoring steps below the noise floor."""
-    total, cum = 0.0, [0.0]
-    for (_, x0, y0), (_, x1, y1) in zip(pts, pts[1:]):
-        d = math.hypot(x1 - x0, y1 - y0)
-        total += d * c["mm_per_px"] if d >= c["noise_floor"] else 0.0
+    """Cumulative mm, ignoring steps too small to be real movement, and skipping
+    gaps.
+
+    If the larva was lost for a while, the straight line between where it vanished
+    and where it reappeared is NOT a path - we never saw the route it took. Adding
+    that chord was inflating totals by roughly tenfold on a real clip. Skipped
+    segments are reported separately as gap time, so the undercount is visible
+    instead of silently baked into the number."""
+    mpp = c["mm_per_px"]
+    floor = max(c["noise_floor"], (NOISE_MM / mpp) if mpp and mpp != 1.0 else 0.0)
+    span = 1.5 / max(c["sample_hz"], 1e-3)           # a step longer than this is a gap
+    total, cum, gap = 0.0, [0.0], 0.0
+    for (t0, x0, y0), (t1, x1, y1) in zip(pts, pts[1:]):
+        if t1 - t0 > span:
+            gap += t1 - t0
+        else:
+            d = math.hypot(x1 - x0, y1 - y0)
+            total += d * mpp if d >= floor else 0.0
         cum.append(total)
-    return total, cum
+    return total, cum, gap
+
+def reach_px(L, c, t):
+    """How far the larva could REALLY have gone since we last saw it.
+
+    Search width and accepted displacement are different things. Widening the
+    window after a miss is right - the animal kept moving while we lost it - but
+    the jump we accept must still obey its top speed, or the tracker teleports
+    across the dish and calls it path length. Measured on a real 4.5 min clip:
+    unbounded widening produced 165 px steps (15 mm/s) and inflated path length
+    about tenfold."""
+    one = 1.0 / max(c["sample_hz"], 1e-3)
+    dt = t - (L.get("t_last") or (t - one))
+    if dt <= 0:                                      # clock reset, or a re-run
+        dt = one
+    if c["mm_per_px"] and c["mm_per_px"] != 1.0:
+        return max(4.0, c["max_speed"] * dt / c["mm_per_px"])
+    return c["max_jump"] * max(1.0, dt * c["sample_hz"])
 
 def step_one(L, gray, c, t, taken=()):
     """Advance one tracked larva by one sample.
@@ -289,16 +342,15 @@ def step_one(L, gray, c, t, taken=()):
             L["misses"] = L.get("misses", 0) + 1
         return hit
 
-    grow = 1 + min(L["misses"], 4)                   # widen the net on each miss
-    reach = int(c["max_jump"]) * grow
-    pad = reach + 25
+    reach = reach_px(L, c, t)                        # what physics allows
+    pad = int(reach) + 25 + 10 * min(L["misses"], 4)  # search wider, accept no further
     x0, y0 = max(0, int(last[0] - pad)), max(0, int(last[1] - pad))
     x1, y1 = min(gray.shape[1], int(last[0] + pad)), min(gray.shape[0], int(last[1] + pad))
     if x1 - x0 < 40 or y1 - y0 < 40:
         x0, y0, x1, y1 = 0, 0, gray.shape[1], gray.shape[0]
     win = gray[y0:y1, x0:x1]
     shift = lambda b: (b[0], b[1] + x0, b[2] + y0, b[3], b[4], b[5] + [x0, y0])
-    wc = dict(c, max_jump=reach)
+    wc = dict(c, max_jump=reach)   # pick_larva gates on this
 
     hit = pick_larva([shift(b) for b in detect(win, c)], last, L["area"], wc, taken)
 
@@ -319,7 +371,7 @@ def step_one(L, gray, c, t, taken=()):
                 break
 
     if hit:
-        L["last"], L["area"], L["misses"] = hit[1:3], hit[0], 0
+        L["last"], L["area"], L["misses"], L["t_last"] = hit[1:3], hit[0], 0, t
         L["pts"].append((t, *hit[1:3]))
     else:
         L["misses"] = L.get("misses", 0) + 1
@@ -364,7 +416,7 @@ def draw(frame, pts, c, elapsed):
     return frame
 
 def save(stem, pts, frame, c):
-    total, cum = path_length(pts, c)
+    total, cum, _gap = path_length(pts, c)
     dur = pts[-1][0] - pts[0][0]
     with open(stem + "_track.csv", "w", newline="") as f:
         w = csv.writer(f)
@@ -410,18 +462,20 @@ def save(stem, S):
                             f"{x:.1f}", f"{y:.1f}", f"{cum:.2f}"])
     with open(stem + "_summary.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["dish", "larva", "name", "duration_s", "samples", "mm_per_px",
-                    f"path_length_{unit}", f"mean_speed_{unit}_per_s"])
+        w.writerow(["dish", "larva", "name", "duration_s", "gap_s", "samples",
+                    "mm_per_px", f"path_length_{unit}", f"mean_speed_{unit}_per_s"])
         for lid, L in S["larvae"].items():
             if len(L["pts"]) < 2:
                 continue
             c = larva_cfg(S, L)
             dur = L["pts"][-1][0] - L["pts"][0][0]
-            total = path_length(L["pts"], c)[0]
-            w.writerow([dn(L), lid, L["name"], f"{dur:.1f}", len(L["pts"]),
-                        c["mm_per_px"], f"{total:.2f}", f"{total / dur:.3f}" if dur else ""])
+            total, _c, gap = path_length(L["pts"], c)
+            seen = max(dur - gap, 1e-9)
+            w.writerow([dn(L), lid, L["name"], f"{dur:.1f}", f"{gap:.1f}", len(L["pts"]),
+                        c["mm_per_px"], f"{total:.2f}", f"{total / seen:.3f}"])
             rows.append({"name": L["name"], "dish": dn(L), "path": round(total, 2),
-                         "duration": round(dur, 1), "samples": len(L["pts"])})
+                         "duration": round(dur, 1), "gap_s": round(gap, 1),
+                         "samples": len(L["pts"])})
     frame = S.get("frame")
     if frame is not None:
         im = frame.copy()
@@ -483,7 +537,7 @@ class Handler(BaseHTTPRequestHandler):
             # frame hunting the whole dish again, and a yeast smear could win it.
             for lid, L in S["larvae"].items():
                 if not which or lid == which:
-                    L.update(pts=[], misses=0)
+                    L.update(pts=[], misses=0, t_last=None)
             return self._send(200, json.dumps({"ok": True}))
 
         if route == "/remove":
@@ -586,24 +640,100 @@ def serve(port, open_browser=True):
         print("\nstopped")
 
 # ---- offline path (tuning + self-check) --------------------------------------
-def run_file(video, c, seed=None):
-    """Offline tracking of one larva, for tuning knobs against a clip."""
+def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, log=print):
+    """Track every larva in a recorded clip, hands off.
+
+    Decodes only the sampled frames (grab() skips the rest), cancels camera drift
+    against the dish, finds the larvae by what moved across the whole clip, and
+    tracks them all at once. This is what the raw video backup is for."""
     cap = cv2.VideoCapture(video)
     if not cap.isOpened():
         sys.exit(f"cannot open {video!r}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    st = max(1, round(fps / c["sample_hz"]))
-    L = seed or {"pts": [], "last": None, "area": None, "misses": 0}
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    step = max(1, round(fps / hz))
+    ok, f0 = cap.read()
+    if not ok:
+        sys.exit("empty video")
+    cir = find_plate(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY))
+    if not cir:
+        sys.exit("no petri dish found in the first frame")
+    cx, cy, r = cir
+    x0, y0, side = int(cx - r), int(cy - r), int(2 * r)
+    sub = lambda f: f[max(0, y0):y0 + side, max(0, x0):x0 + side]
+    g0f = cv2.cvtColor(sub(f0), cv2.COLOR_BGR2GRAY)
+    sc = max(1.0, g0f.shape[1] / 256.0)                 # align on a 256 px thumbnail
+    small_wh = (int(g0f.shape[1] / sc), int(g0f.shape[0] / sc))
+    ref = np.float32(cv2.resize(g0f, small_wh))
+    mpp = dish_mm / (2 * r)
+    lo, hi = area_bounds(mpp)
+    c = dict(D, mm_per_px=mpp, min_area=lo, max_area=hi,
+             sample_hz=hz, max_jump=int(3.0 / mpp))     # 3 mm between samples
+    log(f"dish r={r:.0f}px -> {mpp:.5f} mm/px | larva {lo}-{hi}px | "
+        f"sampling {hz} Hz ({total / fps:.0f}s of video)")
+
+    frames, drift = [], []
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     i = -1
     while True:
-        ok, frame = cap.read()
-        if not ok:
+        if not cap.grab():                              # grab() does not decode
             break
         i += 1
-        if i % st == 0:
-            step_one(L, cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), c, i / fps)
+        if i % step:
+            continue
+        ok, f = cap.retrieve()
+        if not ok:
+            break
+        g = cv2.cvtColor(sub(f), cv2.COLOR_BGR2GRAY)
+        if g.shape != g0f.shape:          # ref is a thumbnail now, compare full size
+            continue
+        (dx, dy), _ = cv2.phaseCorrelate(ref, np.float32(cv2.resize(g, small_wh)))
+        dx, dy = dx * sc, dy * sc
+        drift.append(math.hypot(dx, dy))
+        g = cv2.warpAffine(g, np.float32([[1, 0, -dx], [0, 1, -dy]]),
+                           (g.shape[1], g.shape[0]), borderMode=cv2.BORDER_REPLICATE)
+        frames.append(mask_dish(g, r, r, r, shrink=c["edge_pct"] / 100.0))
     cap.release()
-    return L
+    if len(frames) < 3:
+        sys.exit("not enough frames")
+    log(f"{len(frames)} samples | camera drift up to {max(drift):.0f} px "
+        f"({max(drift) * mpp:.1f} mm) removed by aligning on the dish")
+
+    # what moved across the clip, ever
+    acc = np.zeros(frames[0].shape, np.uint8)
+    for a, b in zip(frames, frames[1:]):
+        acc = cv2.max(acc, cv2.absdiff(cv2.GaussianBlur(a, (0, 0), 2),
+                                       cv2.GaussianBlur(b, (0, 0), 2)))
+    m = cv2.morphologyEx((acc > max(12, int(acc.max() * 0.30))).astype(np.uint8),
+                         cv2.MORPH_CLOSE, np.ones((11, 11), np.uint8))
+    nn, _, st, ce = cv2.connectedComponentsWithStats(m, 8)
+    movers = sorted(((int(st[k, 4]), float(ce[k][0]), float(ce[k][1]))
+                     for k in range(1, nn) if st[k, 4] >= max(60, lo)), reverse=True)
+    log(f"{len(movers)} moving objects")
+
+    larvae, g0 = {}, frames[0]
+    for area, mx, my in movers:
+        if len(larvae) >= max_larvae:
+            break
+        if any(math.hypot(mx - L["last"][0], my - L["last"][1]) < 40 for L in larvae.values()):
+            continue
+        got = next(((iv, th, bb) for iv, th, bb in rank(g0, c, near=(mx, my))[:20]
+                    if survives_window(g0, iv, th, bb, c)), None)
+        if not got:
+            continue
+        iv, th, b = got
+        lid = str(len(larvae) + 1)
+        larvae[lid] = {"name": f"larva {lid}", "color": PALETTE[(len(larvae)) % len(PALETTE)],
+                       "thresh": th, "invert": iv, "pts": [], "misses": 0,
+                       "last": (b[1], b[2]), "area": b[0], "area0": b[0]}
+    if not larvae:
+        sys.exit("found movement but nothing larva-shaped - check --dish-mm")
+    log(f"locked {len(larvae)} larvae")
+
+    St = {"dishes": {}, "larvae": larvae, "frame": None, "cfg": c}
+    for k, g in enumerate(frames):
+        step_all(St, cv2.cvtColor(g, cv2.COLOR_GRAY2BGR), k / hz)
+    return St, cir
 
 def main():
     p = argparse.ArgumentParser()
@@ -611,6 +741,8 @@ def main():
     p.add_argument("--no-open", action="store_true", help="don't launch a browser")
     p.add_argument("--video", help="track a file instead of live, for tuning offline")
     p.add_argument("--out", default="run", help="output name prefix for --video")
+    p.add_argument("--dish-mm", type=float, default=90.0,
+                   help="dish diameter for --video (default 90)")
     p.add_argument("--demo", action="store_true", help="self-check, no camera needed")
     for k, v in D.items():
         p.add_argument("--" + k.replace("_", "-"), type=type(v), default=v)
@@ -618,16 +750,16 @@ def main():
     if a.demo:
         return demo()
     if a.video:
-        c = {k: getattr(a, k) for k in D}
-        L = run_file(a.video, c)
-        if len(L["pts"]) < 2:
-            sys.exit("larva never tracked - try --thresh 120, smaller --min-area, or --invert 1")
-        st = {"larvae": {"1": dict(L, name="larva 1", color=PALETTE[0])},
-              "frame": None, "cfg": c}
-        r = save(os.path.splitext(a.video)[0], st)
-        print(f"{r['larvae'][0]['path']} {r['unit']} over {r['larvae'][0]['duration']} s")
-        if c["mm_per_px"] == 1.0:
-            print("NOTE: --mm-per-px is 1.0, so that length is PIXELS.")
+        St, cir = analyse_video(a.video, a.dish_mm, hz=a.sample_hz)
+        r = save(os.path.splitext(a.video)[0], St)
+        print()
+        for row in sorted(r["larvae"], key=lambda x: -x["path"]):
+            seen = max(row["duration"] - row["gap_s"], 1e-9)
+            print(f"  {row['name']:10s} {row['path']:7.1f} {r['unit']}"
+                  f"  {row['path'] / seen:5.2f} {r['unit']}/s"
+                  f"  tracked {seen:5.0f}s of {row['duration']:.0f}s"
+                  f"  (lost {row['gap_s']:.0f}s)")
+        print(f"\nwrote {r['stem']}_tracks.csv, _summary.csv, _overlay.png")
         return
     serve(a.port, not a.no_open)
 
