@@ -463,7 +463,8 @@ def save(stem, S):
     with open(stem + "_summary.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["dish", "larva", "name", "duration_s", "gap_s", "samples",
-                    "mm_per_px", f"path_length_{unit}", f"mean_speed_{unit}_per_s"])
+                    "mm_per_px", f"path_length_{unit}", f"mean_speed_{unit}_per_s",
+                    f"spread_{unit}"])
         for lid, L in S["larvae"].items():
             if len(L["pts"]) < 2:
                 continue
@@ -471,11 +472,19 @@ def save(stem, S):
             dur = L["pts"][-1][0] - L["pts"][0][0]
             total, _c, gap = path_length(L["pts"], c)
             seen = max(dur - gap, 1e-9)
+            # How far it ever got from where it started. A real trail spreads out;
+            # a jitter cluster on a droplet or a speck never leaves a few mm. This
+            # is reported, not filtered - a genuine sitter also stays put, and
+            # deciding which is which is the experiment, not the tracker's call.
+            p0 = L["pts"][0]
+            spread = max(math.hypot(p[1] - p0[1], p[2] - p0[2])
+                         for p in L["pts"]) * c["mm_per_px"]
             w.writerow([dn(L), lid, L["name"], f"{dur:.1f}", f"{gap:.1f}", len(L["pts"]),
-                        c["mm_per_px"], f"{total:.2f}", f"{total / seen:.3f}"])
+                        c["mm_per_px"], f"{total:.2f}", f"{total / seen:.3f}",
+                        f"{spread:.2f}"])
             rows.append({"name": L["name"], "dish": dn(L), "path": round(total, 2),
                          "duration": round(dur, 1), "gap_s": round(gap, 1),
-                         "samples": len(L["pts"])})
+                         "spread": round(spread, 1), "samples": len(L["pts"])})
     frame = S.get("frame")
     if frame is not None:
         im = frame.copy()
@@ -699,41 +708,93 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, log=print):
     log(f"{len(frames)} samples | camera drift up to {max(drift):.0f} px "
         f"({max(drift) * mpp:.1f} mm) removed by aligning on the dish")
 
-    # what moved across the clip, ever
-    acc = np.zeros(frames[0].shape, np.uint8)
-    for a, b in zip(frames, frames[1:]):
-        acc = cv2.max(acc, cv2.absdiff(cv2.GaussianBlur(a, (0, 0), 2),
-                                       cv2.GaussianBlur(b, (0, 0), 2)))
-    m = cv2.morphologyEx((acc > max(12, int(acc.max() * 0.30))).astype(np.uint8),
-                         cv2.MORPH_CLOSE, np.ones((11, 11), np.uint8))
-    nn, _, st, ce = cv2.connectedComponentsWithStats(m, 8)
-    movers = sorted(((int(st[k, 4]), float(ce[k][0]), float(ce[k][1]))
-                     for k in range(1, nn) if st[k, 4] >= max(60, lo)), reverse=True)
-    log(f"{len(movers)} moving objects")
+    # Everything that never moves - the pen writing, the rim, the bench, slow
+    # condensation - is the per-pixel median over the clip. Subtract it and only
+    # the animals are left. Lock-and-follow could not tell a marker stroke from a
+    # larva; this does not have to.
+    stride = max(1, len(frames) // 60)
+    bg = np.median(np.stack(frames[::stride]), axis=0).astype(np.uint8)
+    ko, kc = kernels(c)
+    lo, hi = c["min_area"], c["max_area"]
 
-    larvae, g0 = {}, frames[0]
-    for area, mx, my in movers:
-        if len(larvae) >= max_larvae:
-            break
-        if any(math.hypot(mx - L["last"][0], my - L["last"][1]) < 40 for L in larvae.values()):
-            continue
-        got = next(((iv, th, bb) for iv, th, bb in rank(g0, c, near=(mx, my))[:20]
-                    if survives_window(g0, iv, th, bb, c)), None)
-        if not got:
-            continue
-        iv, th, b = got
-        lid = str(len(larvae) + 1)
-        larvae[lid] = {"name": f"larva {lid}", "color": PALETTE[(len(larvae)) % len(PALETTE)],
-                       "thresh": th, "invert": iv, "pts": [], "misses": 0,
-                       "last": (b[1], b[2]), "area": b[0], "area0": b[0]}
-    if not larvae:
-        sys.exit("found movement but nothing larva-shaped - check --dish-mm")
-    log(f"locked {len(larvae)} larvae")
+    # Threshold on how far above the NOISE a pixel sits, not on a percentile: a
+    # percentile always returns that fraction of pixels, so it invents detections
+    # on a frame where nothing is there.
+    probe = cv2.GaussianBlur(cv2.absdiff(frames[len(frames) // 2], bg), (0, 0), 1.5)
+    mad = float(np.median(np.abs(probe.astype(np.float32) - np.median(probe))))
+    thr = max(16, int(np.median(probe) + 8 * 1.4826 * mad))
+    log(f"background-difference threshold {thr} (noise MAD {mad:.1f})")
 
-    St = {"dishes": {}, "larvae": larvae, "frame": None, "cfg": c}
-    for k, g in enumerate(frames):
-        step_all(St, cv2.cvtColor(g, cv2.COLOR_GRAY2BGR), k / hz)
-    return St, cir
+    dets = []
+    for g in frames:
+        d = cv2.GaussianBlur(cv2.absdiff(g, bg), (0, 0), 1.5)
+        m = (d >= thr).astype(np.uint8)
+        if ko is not None:
+            m = cv2.morphologyEx(m, cv2.MORPH_OPEN, ko)
+        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kc)
+        pts = []
+        for cnt in cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+            a = cv2.contourArea(cnt)
+            if not lo <= a <= hi:
+                continue
+            bw, bh = cv2.minAreaRect(cnt)[1]
+            e = max(bw, bh) / max(min(bw, bh), 1e-6)
+            if not (1.1 <= e <= LARVA_ELONG[1]):     # a curled larva is nearly round
+                continue
+            M = cv2.moments(cnt)
+            if M["m00"]:
+                pts.append((M["m10"] / M["m00"], M["m01"] / M["m00"], a))
+        dets.append(pts)
+    log(f"{sum(len(p) for p in dets) / max(len(dets), 1):.1f} detections per frame")
+
+    # Link detections into tracks. One detection per track per frame, and never a
+    # step faster than a larva can crawl.
+    hop = c["max_speed"] / hz / mpp
+    tracks = []
+    for k, pts in enumerate(dets):
+        t = k / hz
+        free = set(range(len(pts)))
+        for tr in tracks:
+            if tr["gap"] > 6:                        # 3 s lost: this track is done
+                continue
+            # It kept crawling while we lost it, so widen - but only so far. An
+            # unbounded reacquire radius stitches two different larvae into one
+            # track and draws a straight line across the dish.
+            span = min(hop * (1 + tr["gap"]), 4 * hop)
+            best, bd = None, span
+            for j in free:
+                dd = math.hypot(pts[j][0] - tr["last"][0], pts[j][1] - tr["last"][1])
+                if dd < bd:
+                    best, bd = j, dd
+            if best is None:
+                tr["gap"] += 1
+            else:
+                free.discard(best)
+                tr["last"] = pts[best][:2]
+                tr["gap"] = 0
+                tr["pts"].append((t, pts[best][0], pts[best][1]))
+                tr["areas"].append(pts[best][2])
+        for j in free:
+            tracks.append({"pts": [(t, pts[j][0], pts[j][1])], "last": pts[j][:2],
+                           "gap": 0, "areas": [pts[j][2]]})
+
+    seen_frac = lambda tr: len(tr["pts"]) / max(len(frames), 1)
+    good = sorted((tr for tr in tracks if seen_frac(tr) >= 0.20),
+                  key=lambda tr: -len(tr["pts"]))[:max_larvae]
+    log(f"{len(tracks)} candidate tracks, {len(good)} seen in >=20% of frames")
+    if not good:
+        sys.exit("no persistent tracks - check --dish-mm, or the larvae never moved")
+
+    larvae = {}
+    for i, tr in enumerate(good, 1):
+        larvae[str(i)] = {"name": f"larva {i}", "color": PALETTE[(i - 1) % len(PALETTE)],
+                          "thresh": 0, "invert": 0, "pts": tr["pts"], "misses": 0,
+                          "last": tr["last"], "area": tr["areas"][-1],
+                          "area0": tr["areas"][0]}
+    log(f"tracked {len(larvae)} larvae")
+
+    return ({"dishes": {}, "larvae": larvae, "cfg": c,
+             "frame": cv2.cvtColor(frames[-1], cv2.COLOR_GRAY2BGR)}, cir)
 
 def main():
     p = argparse.ArgumentParser()
@@ -755,10 +816,11 @@ def main():
         print()
         for row in sorted(r["larvae"], key=lambda x: -x["path"]):
             seen = max(row["duration"] - row["gap_s"], 1e-9)
-            print(f"  {row['name']:10s} {row['path']:7.1f} {r['unit']}"
-                  f"  {row['path'] / seen:5.2f} {r['unit']}/s"
-                  f"  tracked {seen:5.0f}s of {row['duration']:.0f}s"
-                  f"  (lost {row['gap_s']:.0f}s)")
+            flag = "" if row["spread"] >= 5 else "   <- stayed put, check it"
+            print(f"  {row['name']:9s} path {row['path']:6.1f} {r['unit']}"
+                  f"  spread {row['spread']:5.1f} {r['unit']}"
+                  f"  {row['path'] / seen:4.2f} {r['unit']}/s"
+                  f"  tracked {seen:4.0f}/{row['duration']:.0f}s{flag}")
         print(f"\nwrote {r['stem']}_tracks.csv, _summary.csv, _overlay.png")
         return
     serve(a.port, not a.no_open)
