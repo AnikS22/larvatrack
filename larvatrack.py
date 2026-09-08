@@ -319,10 +319,29 @@ def pick_larva(blobs, last, area, c, taken=()):
                                    + 40 * abs(b[0] - a0) / max(a0, 1))
 
 NOISE_MM = 0.15                     # centroid wobble on a larva-sized blob
+SMOOTH_S = 0.5                      # trajectory smoothing window, in seconds
+
+def smooth_xy(pts, hz):
+    """Moving average over a fixed span of TIME, not of samples.
+
+    Path length has to come out the same whether you sample at 2 Hz or 30 Hz. A
+    per-step distance threshold cannot do that: at 30 Hz a larva moves less
+    between samples than the threshold itself, so nearly every step is discarded
+    and the total collapses. Smoothing the trajectory over a fixed half-second and
+    then measuring is sample-rate invariant, which is a property you can test."""
+    w = max(1, int(round(SMOOTH_S * hz)) | 1)        # odd window
+    if w < 3 or len(pts) < w:
+        return pts
+    h, out = w // 2, []
+    for i in range(len(pts)):
+        lo_i, hi_i = max(0, i - h), min(len(pts), i + h + 1)
+        seg = pts[lo_i:hi_i]
+        out.append((pts[i][0], sum(p[1] for p in seg) / len(seg),
+                    sum(p[2] for p in seg) / len(seg)))
+    return out
 
 def path_length(pts, c, offplane=None):
-    """Cumulative mm, ignoring steps too small to be real movement, and skipping
-    gaps.
+    """Cumulative mm along a smoothed trajectory, skipping gaps and off-agar runs.
 
     If the larva was lost for a while, the straight line between where it vanished
     and where it reappeared is NOT a path - we never saw the route it took. Adding
@@ -330,10 +349,12 @@ def path_length(pts, c, offplane=None):
     segments are reported separately as gap time, so the undercount is visible
     instead of silently baked into the number."""
     mpp = c["mm_per_px"]
-    floor = max(c["noise_floor"], (NOISE_MM / mpp) if mpp and mpp != 1.0 else 0.0)
-    span = 1.5 / max(c["sample_hz"], 1e-3)           # a step longer than this is a gap
+    hz = max(c["sample_hz"], 1e-3)
+    sm = smooth_xy(pts, hz)
+    span = 1.5 / hz                                  # a step longer than this is a gap
+    floor = c["noise_floor"] if (not mpp or mpp == 1.0) else 0.0
     total, cum, gap = 0.0, [0.0], 0.0
-    for i, ((t0, x0, y0), (t1, x1, y1)) in enumerate(zip(pts, pts[1:])):
+    for i, ((t0, x0, y0), (t1, x1, y1)) in enumerate(zip(sm, sm[1:])):
         # A step measured while the animal was off the agar is at a different
         # magnification, so its length in mm is simply wrong. Treat it as a gap.
         if offplane and (offplane[i] or offplane[i + 1]):
@@ -354,13 +375,14 @@ def reach_px(L, c, t):
     the jump we accept must still obey its top speed, or the tracker teleports
     across the dish and calls it path length. Measured on a real 4.5 min clip:
     unbounded widening produced 165 px steps (15 mm/s) and inflated path length
-    about tenfold."""
+    about tenfold. The floor covers centroid wobble, which does not shrink just
+    because the sample rate went up."""
     one = 1.0 / max(c["sample_hz"], 1e-3)
     dt = t - (L.get("t_last") or (t - one))
     if dt <= 0:                                      # clock reset, or a re-run
         dt = one
     if c["mm_per_px"] and c["mm_per_px"] != 1.0:
-        return max(4.0, c["max_speed"] * dt / c["mm_per_px"])
+        return max(5.0, c["max_speed"] * dt / c["mm_per_px"])
     return c["max_jump"] * max(1.0, dt * c["sample_hz"])
 
 def step_one(L, gray, c, t, taken=()):
@@ -504,7 +526,7 @@ def save(stem, S):
         w = csv.writer(f)
         w.writerow(["dish", "larva", "name", "duration_s", "gap_s", "samples",
                     "mm_per_px", f"path_length_{unit}", f"mean_speed_{unit}_per_s",
-                    f"spread_{unit}", "off_agar_s"])
+                    f"spread_{unit}", "off_agar_s", f"est_5min_{unit}"])
         for lid, L in S["larvae"].items():
             if len(L["pts"]) < 2:
                 continue
@@ -523,10 +545,17 @@ def save(stem, S):
             p0 = usable[0] if usable else L["pts"][0]
             spread = (max(math.hypot(p[1] - p0[1], p[2] - p0[2]) for p in usable)
                       if usable else 0.0) * c["mm_per_px"]
+            # Mean speed is stable across sample rate (1.35-1.40 mm/s for the same
+            # animal at 2-30 Hz); the TOTAL depends on how long we managed to follow
+            # it. So project the standard 5 minute assay figure from the speed, and
+            # label it an estimate - it assumes the animal crawled the same during
+            # the stretches we lost.
+            est5 = total / seen * 300.0
             w.writerow([dn(L), lid, L["name"], f"{dur:.1f}", f"{gap:.1f}", len(L["pts"]),
                         c["mm_per_px"], f"{total:.2f}", f"{total / seen:.3f}",
-                        f"{spread:.2f}", f"{L.get('off_s', 0.0):.1f}"])
+                        f"{spread:.2f}", f"{L.get('off_s', 0.0):.1f}", f"{est5:.1f}"])
             rows.append({"name": L["name"], "dish": dn(L), "path": round(total, 2),
+                         "est5": round(est5, 1),
                          "duration": round(dur, 1), "gap_s": round(gap, 1),
                          "spread": round(spread, 1), "samples": len(L["pts"]),
                          "off_s": round(L.get("off_s", 0.0), 1)})
@@ -839,13 +868,22 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
 
     # Link detections into tracks. One detection per track per frame, and never a
     # step faster than a larva can crawl.
-    hop = c["max_speed"] / hz / mpp
+    # Displacement tolerance has to cover measurement noise as well as movement.
+    # Purely speed-derived, it shrinks with the sample rate until it is smaller
+    # than the centroid wobble itself (3 px at 15 Hz), and then the linker cannot
+    # follow a stationary larva, never mind a crawling one.
+    hop = max(5.0, c["max_speed"] / hz / mpp)
+    # Give up on a track after a fixed number of SECONDS, not frames. Counting
+    # frames meant a 10 Hz run abandoned a larva after 0.6 s where a 2 Hz run
+    # waited 3 s, so raising the sample rate shredded the tracks and the totals
+    # looked like a sampling-geometry effect when it was just this.
+    max_gap = max(3, int(round(3.0 * hz)))
     tracks = []
     for k, pts in enumerate(dets):
         t = k / hz
         free = set(range(len(pts)))
         for tr in tracks:
-            if tr["gap"] > 6:                        # 3 s lost: this track is done
+            if tr["gap"] > max_gap:                  # 3 s lost: this track is done
                 continue
             # It kept crawling while we lost it, so widen - but only so far. An
             # unbounded reacquire radius stitches two different larvae into one
@@ -993,9 +1031,10 @@ def main():
             # worth quoting.
             flag = ("   <- gappy, path undercounts" if row["spread"] > row["path"]
                     else "" if row["spread"] >= 5 else "   <- stayed put, check it")
-            print(f"  {row['name']:9s} path {row['path']:6.1f} {r['unit']}"
-                  f"  spread {row['spread']:5.1f} {r['unit']}"
-                  f"  {row['path'] / seen:4.2f} {r['unit']}/s"
+            print(f"  {row['name']:9s} {row['path'] / seen:4.2f} {r['unit']}/s"
+                  f"  ->5min {row['est5']:6.1f} {r['unit']}"
+                  f"  (seen {row['path']:6.1f} {r['unit']}"
+                  f"  spread {row['spread']:5.1f})"
                   f"  tracked {seen:4.0f}/{row['duration']:.0f}s"
                   + (f"  off-agar {row['off_s']:.0f}s" if row['off_s'] else "") + flag)
         print(f"\nwrote {r['stem']}_tracks.csv, _summary.csv, _overlay.png")
