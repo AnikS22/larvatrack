@@ -73,6 +73,20 @@ def background(gray, sigma=None):
     small = cv2.GaussianBlur(small, (0, 0), max(1.0, sigma / f))
     return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
 
+def sharpness(gray, cx, cy, rad):
+    """How crisp the edges are around a detection.
+
+    A larva on the underside of the lid sits a centimetre or two above the agar,
+    outside the plane the phone focused on, so its edges are soft. Normalising the
+    gradient energy by local contrast keeps this a focus measure rather than a
+    brightness measure."""
+    x0, y0 = max(0, int(cx - rad)), max(0, int(cy - rad))
+    p = gray[y0:y0 + 2 * int(rad), x0:x0 + 2 * int(rad)]
+    if p.size < 25:
+        return 0.0
+    lap = cv2.Laplacian(p, cv2.CV_64F)
+    return float(np.mean(np.abs(lap)) / (p.std() + 1.0))
+
 def kernels(c):
     """Morphology kernels scaled to the SMALLEST larva we accept.
 
@@ -135,6 +149,28 @@ def mask_dish(frame, cx, cy, r, shrink=0.97):
         return np.where(m > 0, frame, np.uint8(mean[0]))
     out = np.full_like(frame, np.uint8(mean[:3]))
     return np.where(m[:, :, None] > 0, frame, out)
+
+def track_plate(gray, cx, cy, r, scale=4):
+    """Where the dish rim is now, given roughly where it was.
+
+    Aligning on the dish is the whole basis for saying a larva moved: the reference
+    plane has to be the agar. Phase correlation on a low-texture agar plate drifts
+    - it reported twice the shift that re-detecting the rim did - so find the rim
+    itself, on a downscaled copy for speed."""
+    g = cv2.resize(gray, (gray.shape[1] // scale, gray.shape[0] // scale),
+                   interpolation=cv2.INTER_AREA)
+    rr = r / scale
+    cir = cv2.HoughCircles(cv2.medianBlur(g, 3), cv2.HOUGH_GRADIENT, 1.4,
+                           max(8, int(rr)), param1=110, param2=45,
+                           minRadius=int(rr * 0.85), maxRadius=int(rr * 1.15))
+    if cir is None:
+        return None
+    best, bd = None, 0.35 * r                       # must be near where it was
+    for x, y, rad in cir[0]:
+        d = math.hypot(x * scale - cx, y * scale - cy)
+        if d < bd:
+            best, bd = (float(x * scale), float(y * scale)), d
+    return best
 
 def find_plates(gray, want=8):
     """Every petri dish rim in the frame, biggest-confidence first."""
@@ -284,7 +320,7 @@ def pick_larva(blobs, last, area, c, taken=()):
 
 NOISE_MM = 0.15                     # centroid wobble on a larva-sized blob
 
-def path_length(pts, c):
+def path_length(pts, c, offplane=None):
     """Cumulative mm, ignoring steps too small to be real movement, and skipping
     gaps.
 
@@ -297,8 +333,12 @@ def path_length(pts, c):
     floor = max(c["noise_floor"], (NOISE_MM / mpp) if mpp and mpp != 1.0 else 0.0)
     span = 1.5 / max(c["sample_hz"], 1e-3)           # a step longer than this is a gap
     total, cum, gap = 0.0, [0.0], 0.0
-    for (t0, x0, y0), (t1, x1, y1) in zip(pts, pts[1:]):
-        if t1 - t0 > span:
+    for i, ((t0, x0, y0), (t1, x1, y1)) in enumerate(zip(pts, pts[1:])):
+        # A step measured while the animal was off the agar is at a different
+        # magnification, so its length in mm is simply wrong. Treat it as a gap.
+        if offplane and (offplane[i] or offplane[i + 1]):
+            gap += t1 - t0
+        elif t1 - t0 > span:
             gap += t1 - t0
         else:
             d = math.hypot(x1 - x0, y1 - y0)
@@ -464,27 +504,32 @@ def save(stem, S):
         w = csv.writer(f)
         w.writerow(["dish", "larva", "name", "duration_s", "gap_s", "samples",
                     "mm_per_px", f"path_length_{unit}", f"mean_speed_{unit}_per_s",
-                    f"spread_{unit}"])
+                    f"spread_{unit}", "off_agar_s"])
         for lid, L in S["larvae"].items():
             if len(L["pts"]) < 2:
                 continue
             c = larva_cfg(S, L)
             dur = L["pts"][-1][0] - L["pts"][0][0]
-            total, _c, gap = path_length(L["pts"], c)
+            total, _c, gap = path_length(L["pts"], c, L.get("offplane"))
             seen = max(dur - gap, 1e-9)
             # How far it ever got from where it started. A real trail spreads out;
             # a jitter cluster on a droplet or a speck never leaves a few mm. This
             # is reported, not filtered - a genuine sitter also stays put, and
             # deciding which is which is the experiment, not the tracker's call.
-            p0 = L["pts"][0]
-            spread = max(math.hypot(p[1] - p0[1], p[2] - p0[2])
-                         for p in L["pts"]) * c["mm_per_px"]
+            # Spread must be measured over the SAME samples path length used, or a
+            # single excluded jump makes spread exceed path, which is impossible.
+            offp = L.get("offplane") or [False] * len(L["pts"])
+            usable = [p for p, o in zip(L["pts"], offp) if not o]
+            p0 = usable[0] if usable else L["pts"][0]
+            spread = (max(math.hypot(p[1] - p0[1], p[2] - p0[2]) for p in usable)
+                      if usable else 0.0) * c["mm_per_px"]
             w.writerow([dn(L), lid, L["name"], f"{dur:.1f}", f"{gap:.1f}", len(L["pts"]),
                         c["mm_per_px"], f"{total:.2f}", f"{total / seen:.3f}",
-                        f"{spread:.2f}"])
+                        f"{spread:.2f}", f"{L.get('off_s', 0.0):.1f}"])
             rows.append({"name": L["name"], "dish": dn(L), "path": round(total, 2),
                          "duration": round(dur, 1), "gap_s": round(gap, 1),
-                         "spread": round(spread, 1), "samples": len(L["pts"])})
+                         "spread": round(spread, 1), "samples": len(L["pts"]),
+                         "off_s": round(L.get("off_s", 0.0), 1)})
     frame = S.get("frame")
     if frame is not None:
         im = frame.copy()
@@ -649,7 +694,7 @@ def serve(port, open_browser=True):
         print("\nstopped")
 
 # ---- offline path (tuning + self-check) --------------------------------------
-def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, log=print):
+def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False, log=print):
     """Track every larva in a recorded clip, hands off.
 
     Decodes only the sampled frames (grab() skips the rest), cancels camera drift
@@ -671,9 +716,6 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, log=print):
     x0, y0, side = int(cx - r), int(cy - r), int(2 * r)
     sub = lambda f: f[max(0, y0):y0 + side, max(0, x0):x0 + side]
     g0f = cv2.cvtColor(sub(f0), cv2.COLOR_BGR2GRAY)
-    sc = max(1.0, g0f.shape[1] / 256.0)                 # align on a 256 px thumbnail
-    small_wh = (int(g0f.shape[1] / sc), int(g0f.shape[0] / sc))
-    ref = np.float32(cv2.resize(g0f, small_wh))
     mpp = dish_mm / (2 * r)
     lo, hi = area_bounds(mpp)
     c = dict(D, mm_per_px=mpp, min_area=lo, max_area=hi,
@@ -681,11 +723,16 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, log=print):
     log(f"dish r={r:.0f}px -> {mpp:.5f} mm/px | larva {lo}-{hi}px | "
         f"sampling {hz} Hz ({total / fps:.0f}s of video)")
 
-    frames, drift = [], []
+    # Measure the rim first, smooth the series, THEN warp. Warping frame by frame
+    # off a raw estimate was the worst bug in this pipeline: the rim only wanders
+    # ~10 px over the whole clip, but a per-frame Hough estimate jitters +-35 px,
+    # so "stabilising" injected far more motion than it removed and every track
+    # came out following the camera.
+    raw, centres = [], []
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     i = -1
     while True:
-        if not cap.grab():                              # grab() does not decode
+        if not cap.grab():
             break
         i += 1
         if i % step:
@@ -694,19 +741,49 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, log=print):
         if not ok:
             break
         g = cv2.cvtColor(sub(f), cv2.COLOR_BGR2GRAY)
-        if g.shape != g0f.shape:          # ref is a thumbnail now, compare full size
+        if g.shape != g0f.shape:
             continue
-        (dx, dy), _ = cv2.phaseCorrelate(ref, np.float32(cv2.resize(g, small_wh)))
-        dx, dy = dx * sc, dy * sc
-        drift.append(math.hypot(dx, dy))
-        g = cv2.warpAffine(g, np.float32([[1, 0, -dx], [0, 1, -dy]]),
-                           (g.shape[1], g.shape[0]), borderMode=cv2.BORDER_REPLICATE)
-        frames.append(mask_dish(g, r, r, r, shrink=c["edge_pct"] / 100.0))
+        raw.append(g)
+        centres.append(track_plate(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), cx, cy, r, scale=2))
     cap.release()
-    if len(frames) < 3:
+    if len(raw) < 3:
         sys.exit("not enough frames")
-    log(f"{len(frames)} samples | camera drift up to {max(drift):.0f} px "
-        f"({max(drift) * mpp:.1f} mm) removed by aligning on the dish")
+
+    known = [k for k, p in enumerate(centres) if p]
+    if known:
+        for k, p in enumerate(centres):              # carry the rim through dropouts
+            if not p:
+                centres[k] = centres[min(known, key=lambda j: abs(j - k))]
+    else:
+        centres = [(cx, cy)] * len(raw)
+    win = 9                                          # running median kills the jitter
+    sm = []
+    for k in range(len(centres)):
+        lo_k, hi_k = max(0, k - win // 2), min(len(centres), k + win // 2 + 1)
+        xs = sorted(p[0] for p in centres[lo_k:hi_k])
+        ys = sorted(p[1] for p in centres[lo_k:hi_k])
+        sm.append((xs[len(xs) // 2], ys[len(ys) // 2]))
+    drift = [(p[0] - sm[0][0], p[1] - sm[0][1]) for p in sm]
+    dmax = max(math.hypot(*d) for d in drift)
+    resid = max(math.hypot(c[0] - t[0], c[1] - t[1]) for c, t in zip(centres, sm))
+    log(f"{len(raw)} samples | dish wanders {dmax:.0f} px ({dmax * mpp:.1f} mm); "
+        f"per-frame estimate noise {resid:.0f} px, smoothed out")
+
+    if not stabilise:
+        # Measured on a tripod-style rig: the rim wanders a few px while a per-frame
+        # Hough estimate jitters an order of magnitude more. Correcting with an
+        # estimate noisier than the signal adds motion to every track. Off unless
+        # asked for, and worth asking for only if the camera was actually knocked.
+        log("  not stabilising (estimator noise exceeds the drift; use --stabilise "
+            "if the camera was actually bumped)")
+        drift = [(0.0, 0.0)] * len(raw)
+
+    frames = []
+    for g, d in zip(raw, drift):
+        if math.hypot(*d) > 1.0:                     # sub-pixel drift is not worth warping
+            g = cv2.warpAffine(g, np.float32([[1, 0, -d[0]], [0, 1, -d[1]]]),
+                               (g.shape[1], g.shape[0]), borderMode=cv2.BORDER_REPLICATE)
+        frames.append(mask_dish(g, r, r, r, shrink=c["edge_pct"] / 100.0))
 
     # Everything that never moves - the pen writing, the rim, the bench, slow
     # condensation - is the per-pixel median over the clip. Subtract it and only
@@ -743,7 +820,8 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, log=print):
                 continue
             M = cv2.moments(cnt)
             if M["m00"]:
-                pts.append((M["m10"] / M["m00"], M["m01"] / M["m00"], a))
+                px, py = M["m10"] / M["m00"], M["m01"] / M["m00"]
+                pts.append((px, py, a, sharpness(g, px, py, max(6, math.sqrt(a)))))
         dets.append(pts)
     log(f"{sum(len(p) for p in dets) / max(len(dets), 1):.1f} detections per frame")
 
@@ -774,14 +852,71 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, log=print):
                 tr["gap"] = 0
                 tr["pts"].append((t, pts[best][0], pts[best][1]))
                 tr["areas"].append(pts[best][2])
+                tr["focus"].append(pts[best][3])
+                tr["k"].append(k)
         for j in free:
             tracks.append({"pts": [(t, pts[j][0], pts[j][1])], "last": pts[j][:2],
-                           "gap": 0, "areas": [pts[j][2]]})
+                           "gap": 0, "areas": [pts[j][2]], "focus": [pts[j][3]],
+                           "k": [k]})
 
     seen_frac = lambda tr: len(tr["pts"]) / max(len(frames), 1)
     good = sorted((tr for tr in tracks if seen_frac(tr) >= 0.20),
                   key=lambda tr: -len(tr["pts"]))[:max_larvae]
     log(f"{len(tracks)} candidate tracks, {len(good)} seen in >=20% of frames")
+    # PARALLAX. Frames were aligned on the dish rim, i.e. on the AGAR plane. An
+    # object on the underside of the lid sits a centimetre or two nearer the lens,
+    # so the same camera nudge moves it by a different amount - after we cancel the
+    # agar-plane shift, a lid object keeps a residual that tracks the camera, while
+    # a crawling larva's motion has nothing to do with it.
+    for tr in good:
+        vs, us = [], []
+        for (ka, pa), (kb, pb) in zip(zip(tr["k"], tr["pts"]), zip(tr["k"][1:], tr["pts"][1:])):
+            if kb - ka != 1:
+                continue
+            vs.append((pb[1] - pa[1], pb[2] - pa[2]))
+            us.append((drift[kb][0] - drift[ka][0], drift[kb][1] - drift[ka][1]))
+        num = sum(v[0] * u[0] + v[1] * u[1] for v, u in zip(vs, us))
+        du = sum(u[0] * u[0] + u[1] * u[1] for u in us)
+        dv = sum(v[0] * v[0] + v[1] * v[1] for v in vs)
+        tr["parallax"] = num / math.sqrt(du * dv) if du > 0 and dv > 0 else 0.0
+        tr["slope"] = num / du if du > 0 else 0.0
+    # OFF THE AGAR (on the lid, or up the wall). A larva that climbs the wall onto
+    # the underside of the lid moves a centimetre or two nearer the lens: it gets
+    # bigger and, being off the focused plane, softer. Both at once, sustained, is
+    # the signature. Judged WITHIN a track against that animal's own baseline -
+    # comparing sizes between larvae just measures how big each larva is.
+    for tr in good:
+        n_ = len(tr["pts"])
+        roll = lambda arr, k: sorted(arr[max(0, k - 4):k + 5])[len(arr[max(0, k - 4):k + 5]) // 2]
+        base_a = sorted(tr["areas"])[n_ // 2]
+        base_f = sorted(tr["focus"])[n_ // 2]
+        flags = []
+        for k in range(n_):
+            ra, rf = roll(tr["areas"], k), roll(tr["focus"], k)
+            flags.append(ra > 1.15 * base_a and rf < 0.75 * base_f)
+        run, out = 0, [False] * n_                   # only sustained changes count
+        for k in range(n_):
+            run = run + 1 if flags[k] else 0
+            if run >= 3:
+                for j in range(k - run + 1, k + 1):
+                    out[j] = True
+        tr["offplane"] = out
+        tr["off_s"] = sum(out) / hz
+
+    log("parallax (motion that follows the camera; ~0 = on the agar):")
+    for tr in good:
+        fs = sorted(tr["focus"])
+        log(f"   n={len(tr['pts']):4d}  parallax r={tr['parallax']:+.2f} "
+            f"slope={tr['slope']:+.2f}  focus={fs[len(fs) // 2]:.3f}")
+    allf = sorted(f for tr in good for f in tr["focus"])
+    if allf:
+        q = lambda p: allf[min(len(allf) - 1, int(p * len(allf)))]
+        log(f"focus: p05={q(.05):.3f} p25={q(.25):.3f} median={q(.5):.3f} "
+            f"p75={q(.75):.3f} p95={q(.95):.3f}")
+        for tr in good:
+            fs = sorted(tr["focus"])
+            log(f"   track n={len(fs):4d} focus median={fs[len(fs)//2]:.3f} "
+                f"min={fs[0]:.3f} max={fs[-1]:.3f}")
     if not good:
         sys.exit("no persistent tracks - check --dish-mm, or the larvae never moved")
 
@@ -790,7 +925,12 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, log=print):
         larvae[str(i)] = {"name": f"larva {i}", "color": PALETTE[(i - 1) % len(PALETTE)],
                           "thresh": 0, "invert": 0, "pts": tr["pts"], "misses": 0,
                           "last": tr["last"], "area": tr["areas"][-1],
-                          "area0": tr["areas"][0]}
+                          "area0": tr["areas"][0], "offplane": tr["offplane"],
+                          "off_s": tr["off_s"]}
+    off = [l for l in larvae.values() if l["off_s"] > 0]
+    log(f"off the agar (bigger AND softer, sustained): "
+        + (", ".join(f"{l['name']} {l['off_s']:.0f}s" for l in off) if off
+           else "none detected in this clip"))
     log(f"tracked {len(larvae)} larvae")
 
     return ({"dishes": {}, "larvae": larvae, "cfg": c,
@@ -802,6 +942,8 @@ def main():
     p.add_argument("--no-open", action="store_true", help="don't launch a browser")
     p.add_argument("--video", help="track a file instead of live, for tuning offline")
     p.add_argument("--out", default="run", help="output name prefix for --video")
+    p.add_argument("--stabilise", action="store_true",
+                   help="cancel camera drift (only if the camera was actually moved)")
     p.add_argument("--dish-mm", type=float, default=90.0,
                    help="dish diameter for --video (default 90)")
     p.add_argument("--demo", action="store_true", help="self-check, no camera needed")
@@ -811,16 +953,21 @@ def main():
     if a.demo:
         return demo()
     if a.video:
-        St, cir = analyse_video(a.video, a.dish_mm, hz=a.sample_hz)
+        St, cir = analyse_video(a.video, a.dish_mm, hz=a.sample_hz, stabilise=a.stabilise)
         r = save(os.path.splitext(a.video)[0], St)
         print()
         for row in sorted(r["larvae"], key=lambda x: -x["path"]):
             seen = max(row["duration"] - row["gap_s"], 1e-9)
-            flag = "" if row["spread"] >= 5 else "   <- stayed put, check it"
+            # Spread is straight-line distance, so it CANNOT exceed a fully observed
+            # path. When it does, more was missed than seen and the total is not
+            # worth quoting.
+            flag = ("   <- gappy, path undercounts" if row["spread"] > row["path"]
+                    else "" if row["spread"] >= 5 else "   <- stayed put, check it")
             print(f"  {row['name']:9s} path {row['path']:6.1f} {r['unit']}"
                   f"  spread {row['spread']:5.1f} {r['unit']}"
                   f"  {row['path'] / seen:4.2f} {r['unit']}/s"
-                  f"  tracked {seen:4.0f}/{row['duration']:.0f}s{flag}")
+                  f"  tracked {seen:4.0f}/{row['duration']:.0f}s"
+                  + (f"  off-agar {row['off_s']:.0f}s" if row['off_s'] else "") + flag)
         print(f"\nwrote {r['stem']}_tracks.csv, _summary.csv, _overlay.png")
         return
     serve(a.port, not a.no_open)
