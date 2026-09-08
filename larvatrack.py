@@ -694,7 +694,8 @@ def serve(port, open_browser=True):
         print("\nstopped")
 
 # ---- offline path (tuning + self-check) --------------------------------------
-def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False, log=print):
+def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
+                  expect=None, log=print):
     """Track every larva in a recorded clip, hands off.
 
     Decodes only the sampled frames (grab() skips the rest), cancels camera drift
@@ -789,8 +790,19 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False, log=pr
     # condensation - is the per-pixel median over the clip. Subtract it and only
     # the animals are left. Lock-and-follow could not tell a marker stroke from a
     # larva; this does not have to.
-    stride = max(1, len(frames) // 60)
-    bg = np.median(np.stack(frames[::stride]), axis=0).astype(np.uint8)
+    # A ROLLING median, not one for the whole clip. Condensation creeps across the
+    # lid over four minutes, so a single global background leaves a slow-changing
+    # residual everywhere and the detector reports dozens of "larvae". Each frame
+    # is compared against the plate as it looked around that time.
+    span = max(3, int(60 * hz))                      # +-30 s of context
+    keys = list(range(0, len(frames), max(1, span // 2)))
+    bgs = {}
+    for k0 in keys:
+        lo_k, hi_k = max(0, k0 - span), min(len(frames), k0 + span + 1)
+        sel = frames[lo_k:hi_k:max(1, (hi_k - lo_k) // 15)]
+        bgs[k0] = np.median(np.stack(sel), axis=0).astype(np.uint8)
+    bg_for = lambda k: bgs[min(keys, key=lambda a: abs(a - k))]
+    bg = bg_for(len(frames) // 2)
     ko, kc = kernels(c)
     lo, hi = c["min_area"], c["max_area"]
 
@@ -803,8 +815,8 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False, log=pr
     log(f"background-difference threshold {thr} (noise MAD {mad:.1f})")
 
     dets = []
-    for g in frames:
-        d = cv2.GaussianBlur(cv2.absdiff(g, bg), (0, 0), 1.5)
+    for fi, g in enumerate(frames):
+        d = cv2.GaussianBlur(cv2.absdiff(g, bg_for(fi)), (0, 0), 1.5)
         m = (d >= thr).astype(np.uint8)
         if ko is not None:
             m = cv2.morphologyEx(m, cv2.MORPH_OPEN, ko)
@@ -860,9 +872,24 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False, log=pr
                            "k": [k]})
 
     seen_frac = lambda tr: len(tr["pts"]) / max(len(frames), 1)
-    good = sorted((tr for tr in tracks if seen_frac(tr) >= 0.20),
-                  key=lambda tr: -len(tr["pts"]))[:max_larvae]
-    log(f"{len(tracks)} candidate tracks, {len(good)} seen in >=20% of frames")
+    def spread_px(tr):
+        p0 = tr["pts"][0]
+        return max(math.hypot(p[1] - p0[1], p[2] - p0[2]) for p in tr["pts"])
+    cand = [tr for tr in tracks if seen_frac(tr) >= 0.20]
+    log(f"{len(tracks)} candidate tracks, {len(cand)} seen in >=20% of frames")
+    if expect:
+        # You said how many animals are in the dish. Rank by how far each track
+        # actually travelled: a larva crosses the plate, an artefact sits on a
+        # shadow edge and jitters. Ties on travel go to the longer-lived track.
+        cand.sort(key=lambda tr: (-spread_px(tr), -len(tr["pts"])))
+        dropped = cand[expect:]
+        good = cand[:expect]
+        if dropped:
+            log(f"keeping the {expect} furthest-travelled; dropped {len(dropped)} "
+                f"(largest dropped travel {spread_px(dropped[0]) * mpp:.1f} mm vs "
+                f"smallest kept {spread_px(good[-1]) * mpp:.1f} mm)")
+    else:
+        good = sorted(cand, key=lambda tr: -len(tr["pts"]))[:max_larvae]
     # PARALLAX. Frames were aligned on the dish rim, i.e. on the AGAR plane. An
     # object on the underside of the lid sits a centimetre or two nearer the lens,
     # so the same camera nudge moves it by a different amount - after we cancel the
@@ -942,6 +969,8 @@ def main():
     p.add_argument("--no-open", action="store_true", help="don't launch a browser")
     p.add_argument("--video", help="track a file instead of live, for tuning offline")
     p.add_argument("--out", default="run", help="output name prefix for --video")
+    p.add_argument("--larvae", type=int,
+                   help="how many animals are actually in the dish")
     p.add_argument("--stabilise", action="store_true",
                    help="cancel camera drift (only if the camera was actually moved)")
     p.add_argument("--dish-mm", type=float, default=90.0,
@@ -953,7 +982,8 @@ def main():
     if a.demo:
         return demo()
     if a.video:
-        St, cir = analyse_video(a.video, a.dish_mm, hz=a.sample_hz, stabilise=a.stabilise)
+        St, cir = analyse_video(a.video, a.dish_mm, hz=a.sample_hz,
+                                stabilise=a.stabilise, expect=a.larvae)
         r = save(os.path.splitext(a.video)[0], St)
         print()
         for row in sorted(r["larvae"], key=lambda x: -x["path"]):
