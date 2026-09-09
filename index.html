@@ -24,6 +24,8 @@
   input.nm{width:100%}
   .x{background:none;border:none;color:#888;cursor:pointer;font-size:15px;padding:0 4px}
   .x:hover{color:#f96}
+  .rl{background:none;border:none;color:#888;cursor:pointer;font-size:15px;padding:0 4px}
+  .rl:hover{color:#4af} .rl.on{color:#4af;background:#046;border-radius:4px}
   #sub{color:#999;font-size:12px;min-height:1.4em}
 </style>
 
@@ -57,7 +59,10 @@
   <fieldset><legend>Larvae</legend>
     <button id="larvamode">Drag = add larva</button>
     <p class="hint" id="addhint">Drag a box round a larva — it finds the animal
-      inside your box and starts a track. Repeat for each one.</p>
+      inside your box and starts a track. Repeat for each one.<br>
+      Lost one? Hit <b>&#8635;</b> on its row, then drag a box on it: the track
+      re-locks and <b>keeps the path it already walked</b>. Time spent lost is never
+      counted as distance.</p>
     <table><tbody id="list"></tbody></table>
     <p class="hint" id="count">no larvae yet</p>
     <p class="hint" id="lasthint"></p>
@@ -103,7 +108,7 @@ const v = $('v'), ov = $('ov'), ctx = ov.getContext('2d');
 const grab = document.createElement('canvas'), gctx = grab.getContext('2d');
 let stream = null, running = false, timer = null, t0 = 0;
 let roi = null, circle = null, drag = null, mode = 'dish';
-let larvae = [];                      // [{id,name,color,found,x,y,poly,path}]
+let larvae = [], relockId = null;                      // [{id,name,color,found,x,y,poly,path}]
 let tracks = {};                      // id -> [[x,y],...] for drawing
 let unit = 'px';
 let rec = null, chunks = [], recMime = '';
@@ -205,16 +210,25 @@ async function addLarva(b){
   const a = area();                      // box coords are relative to what we post
   const p = new URLSearchParams({bx:Math.round(b.x-a.x), by:Math.round(b.y-a.y),
                                 bw:Math.round(b.w), bh:Math.round(b.h)});
+  const route = relockId ? `/relock?id=${relockId}&` : '/add?';
   $('lasthint').textContent = 'looking inside your box…';
   let r;
   try {
-    r = await (await fetch(`/add?${qs()}&${p}`, {method:'POST', body:await shot(a)})).json();
+    r = await (await fetch(`${route}${qs()}&${p}`, {method:'POST', body:await shot(a)})).json();
   } catch(err){
     $('lasthint').innerHTML = `<span class=bad>add failed: ${err.message}</span>`; return;
   }
   if (!r.found){
     $('lasthint').innerHTML = `<span class=bad>${r.why || 'nothing found'}</span>`;
     paint(); return;
+  }
+  if (r.relocked){                                      // same animal, path kept
+    const L = larvae.find(x => x.id === r.id);
+    Object.assign(L, r);
+    relockId = null;
+    $('lasthint').innerHTML = `<span class=good>${r.name} re-locked — path so far kept`
+      + ` (${(tracks[r.id]||[]).length} samples).</span>`;
+    renderList(); paint(); return;
   }
   if (larvae.some(L => L.id === r.id)){                 // server reused an id
     $('lasthint').innerHTML = '<span class=bad>duplicate id from server</span>'; return;
@@ -230,7 +244,18 @@ function renderList(){
     <td><input type="color" value="${L.color}" data-id="${L.id}" class="col"></td>
     <td><input type="text" class="nm" value="${L.name}" data-id="${L.id}"></td>
     <td class="p" id="p${L.id}">—</td>
+    <td><button class="rl" data-id="${L.id}" title="lost it? click, then drag a box on the larva">&#8635;</button></td>
     <td><button class="x" data-id="${L.id}">&times;</button></td></tr>`).join('');
+  $('list').querySelectorAll('.rl').forEach(b => b.onclick = () => {
+    relockId = relockId === b.dataset.id ? null : b.dataset.id;
+    renderList();
+    $('lasthint').innerHTML = relockId
+      ? `<b>drag a box on ${larvae.find(L=>L.id===relockId).name}</b> to re-lock it —`
+        + ` its path so far is kept`
+      : 're-lock cancelled';
+  });
+  $('list').querySelectorAll('.rl').forEach(b =>
+    b.classList.toggle('on', b.dataset.id === relockId));
   $('count').textContent = larvae.length
     ? `${larvae.length} larva${larvae.length>1?'e':''} — drag another box to add more`
     : 'no larvae yet';
@@ -295,7 +320,8 @@ async function tick(){
       if (r.found){ (tracks[r.id] = tracks[r.id] || []).push([r.x, r.y]); live++; }
       const cell = $('p'+r.id);
       if (cell) cell.innerHTML = `${r.path.toFixed(1)} ${unit}`
-        + (r.found ? '' : ' <span class=bad>LOST</span>');
+        + (r.found ? (r.gap_s ? ` <span class=hint style="font-size:11px">lost ${r.gap_s}s total</span>` : '')
+                   : ` <span class=bad>LOST ${r.since}s</span>`);
     });
     $('sub').innerHTML = `${t.toFixed(0)} s · ${live}/${res.larvae.length} tracking`;
     paint();

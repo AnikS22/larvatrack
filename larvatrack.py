@@ -436,8 +436,15 @@ def step_one(L, gray, c, t, taken=()):
 
     reach = reach_px(L, c, t)                        # what physics allows
     pad = int(reach) + 25 + 10 * min(L["misses"], 4)  # search wider, accept no further
-    x0, y0 = max(0, int(last[0] - pad)), max(0, int(last[1] - pad))
-    x1, y1 = min(gray.shape[1], int(last[0] + pad)), min(gray.shape[0], int(last[1] + pad))
+    # Centre the search where the larva is GOING. A crawling animal keeps its
+    # heading, so after a miss it is further along the path, not still at `last`.
+    if len(L["pts"]) >= 2 and not L["misses"]:
+        (_, ax, ay), (_, bx, by) = L["pts"][-2], L["pts"][-1]
+        qx, qy = bx + (bx - ax), by + (by - ay)
+    else:
+        qx, qy = last
+    x0, y0 = max(0, int(qx - pad)), max(0, int(qy - pad))
+    x1, y1 = min(gray.shape[1], int(qx + pad)), min(gray.shape[0], int(qy + pad))
     if x1 - x0 < 40 or y1 - y0 < 40:
         x0, y0, x1, y1 = 0, 0, gray.shape[1], gray.shape[0]
     win = gray[y0:y1, x0:x1]
@@ -488,7 +495,10 @@ def step_all(S, frame, t):
         if hit:
             taken.append(hit[1:3])
         d = S["dishes"].get(L.get("dish"))
+        gap_s = path_length(L["pts"], c)[2]
+        since = (t - L["t_last"]) if (hit is None and L.get("t_last")) else 0.0
         out.append({"id": lid, "name": L["name"], "color": L["color"],
+                    "gap_s": round(gap_s, 1), "since": round(since, 1),
                     "dish": L.get("dish"), "dish_name": d["name"] if d else "",
                     "found": hit is not None,
                     "x": hit[1] if hit else None, "y": hit[2] if hit else None,
@@ -676,7 +686,7 @@ class Handler(BaseHTTPRequestHandler):
                 out["min_area"], out["max_area"] = area_bounds(mpp)
             return self._send(200, json.dumps(out))
 
-        if route == "/add":
+        if route in ("/add", "/relock"):
             if frame is None:
                 return self._send(400, json.dumps({"error": "bad frame"}))
             if DUMP:
@@ -703,6 +713,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"found": False,
                     "why": "found nothing that keeps tracking outside your box - draw it tighter round the larva"}))
             inv, th, b = got
+            if route == "/relock":
+                # Re-point a larva that got lost, WITHOUT discarding what it has
+                # already walked. Deleting and re-adding would restart its path at
+                # zero and silently lose the measurement so far.
+                lid = q.get("id")
+                L = S["larvae"].get(lid)
+                if not L:
+                    return self._send(200, json.dumps({"found": False,
+                                                       "why": "no such larva"}))
+                L.update(thresh=th, invert=inv, last=(b[1], b[2]), area=b[0],
+                         misses=0, t_last=None)
+                return self._send(200, json.dumps({"found": True, "id": lid,
+                    "name": L["name"], "color": L["color"], "x": b[1], "y": b[2],
+                    "area": round(b[0]), "elong": round(b[3], 1), "invert": inv,
+                    "thresh": th, "poly": b[5].tolist(), "relocked": True}))
             lid = str(S["next_id"])
             S["next_id"] += 1
             S["larvae"][lid] = {
