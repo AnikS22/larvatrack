@@ -12,6 +12,7 @@ Nothing is recorded - only the final CSVs and an overlay PNG are saved.
 import argparse, csv, io, json, math, os, sys, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+from scipy.optimize import linear_sum_assignment
 import cv2, numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -320,6 +321,7 @@ def pick_larva(blobs, last, area, c, taken=()):
 
 NOISE_MM = 0.15                     # centroid wobble on a larva-sized blob
 SMOOTH_S = 0.5                      # trajectory smoothing window, in seconds
+BRIDGE_MAX_MM = 25.0                # furthest a lost track may be rejoined across
 
 def smooth_xy(pts, hz):
     """Moving average over a fixed span of TIME, not of samples.
@@ -724,7 +726,7 @@ def serve(port, open_browser=True):
 
 # ---- offline path (tuning + self-check) --------------------------------------
 def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
-                  expect=None, log=print):
+                  expect=None, bridge_s=0.0, log=print):
     """Track every larva in a recorded clip, hands off.
 
     Decodes only the sampled frames (grab() skips the rest), cancels camera drift
@@ -866,48 +868,133 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
         dets.append(pts)
     log(f"{sum(len(p) for p in dets) / max(len(dets), 1):.1f} detections per frame")
 
-    # Link detections into tracks. One detection per track per frame, and never a
-    # step faster than a larva can crawl.
-    # Displacement tolerance has to cover measurement noise as well as movement.
-    # Purely speed-derived, it shrinks with the sample rate until it is smaller
-    # than the centroid wobble itself (3 px at 15 Hz), and then the linker cannot
-    # follow a stationary larva, never mind a crawling one.
+    # Link detections into tracks. Four ideas borrowed from the established
+    # trackers, all aimed at the same weakness - fragmentation:
+    #   Hungarian assignment (FIMTrack, TrackMate LAP) instead of greedy, so two
+    #     tracks cannot both grab the nearest blob and one lose out arbitrarily;
+    #   an area-ratio gate (Tierpsy's area_ratio_lim, wrMTrck's maxAreaChange), so
+    #     a track cannot jump to a blob of a completely different size;
+    #   constant-velocity prediction (ToxTrac uses a Kalman filter for this), so a
+    #     crawling larva is looked for where it is going, not where it was;
+    #   gap closing (TrackMate's second LAP stage, Tierpsy's gap bridging) to
+    #     stitch fragments of the same animal back together afterwards.
+    AREA_RATIO = 2.5
     hop = max(5.0, c["max_speed"] / hz / mpp)
-    # Give up on a track after a fixed number of SECONDS, not frames. Counting
-    # frames meant a 10 Hz run abandoned a larva after 0.6 s where a 2 Hz run
-    # waited 3 s, so raising the sample rate shredded the tracks and the totals
-    # looked like a sampling-geometry effect when it was just this.
     max_gap = max(3, int(round(3.0 * hz)))
+
+    def predict(tr):
+        """Where this track is heading, from its last observed step."""
+        if len(tr["pts"]) >= 2 and tr["k"][-1] - tr["k"][-2] == 1:
+            (_, x1, y1), (_, x0, y0) = tr["pts"][-1], tr["pts"][-2]
+            return x1 + (x1 - x0), y1 + (y1 - y0)
+        return tr["last"]
+
+    ref_area = lambda tr: sorted(tr["areas"][-9:])[len(tr["areas"][-9:]) // 2]
+
     tracks = []
     for k, pts in enumerate(dets):
         t = k / hz
-        free = set(range(len(pts)))
-        for tr in tracks:
-            if tr["gap"] > max_gap:                  # 3 s lost: this track is done
-                continue
-            # It kept crawling while we lost it, so widen - but only so far. An
-            # unbounded reacquire radius stitches two different larvae into one
-            # track and draws a straight line across the dish.
-            span = min(hop * (1 + tr["gap"]), 4 * hop)
-            best, bd = None, span
-            for j in free:
-                dd = math.hypot(pts[j][0] - tr["last"][0], pts[j][1] - tr["last"][1])
-                if dd < bd:
-                    best, bd = j, dd
-            if best is None:
-                tr["gap"] += 1
-            else:
-                free.discard(best)
-                tr["last"] = pts[best][:2]
+        live = [tr for tr in tracks if tr["gap"] <= max_gap]
+        taken_j = set()
+        if pts and live:
+            BIG = 1e6
+            C = np.full((len(live), len(pts)), BIG)
+            for i, tr in enumerate(live):
+                span = min(hop * (1 + tr["gap"]), 4 * hop)
+                qx, qy = predict(tr)
+                a0 = ref_area(tr) or 1.0
+                for j, (x, y, a, _f) in enumerate(pts):
+                    d = math.hypot(x - qx, y - qy)
+                    if d > span:
+                        continue
+                    ratio = (a / a0) if a0 else 1.0
+                    if not (1.0 / AREA_RATIO <= ratio <= AREA_RATIO):
+                        continue
+                    C[i, j] = d + 0.5 * span * abs(math.log(ratio))
+            ri, ci = linear_sum_assignment(C)
+            for i, j in zip(ri, ci):
+                if C[i, j] >= BIG:
+                    continue
+                tr = live[i]
+                taken_j.add(j)
+                tr["last"] = pts[j][:2]
                 tr["gap"] = 0
-                tr["pts"].append((t, pts[best][0], pts[best][1]))
-                tr["areas"].append(pts[best][2])
-                tr["focus"].append(pts[best][3])
+                tr["pts"].append((t, pts[j][0], pts[j][1]))
+                tr["areas"].append(pts[j][2])
+                tr["focus"].append(pts[j][3])
                 tr["k"].append(k)
-        for j in free:
+                tr["matched"] = True
+        for tr in live:
+            if tr.pop("matched", False):
+                continue
+            tr["gap"] += 1
+        for j in range(len(pts)):
+            if j in taken_j:
+                continue
             tracks.append({"pts": [(t, pts[j][0], pts[j][1])], "last": pts[j][:2],
                            "gap": 0, "areas": [pts[j][2]], "focus": [pts[j][3]],
                            "k": [k]})
+
+    # Gap closing: a larva that was missed for a couple of seconds comes back as a
+    # brand new track. Join B onto A when B starts soon after A ended, close enough
+    # that the animal could have crawled there, and at a consistent size.
+    # Gap closing, off by default. Measured on a real clip: it lifts coverage
+    # (larva 2 from 88 s of span to 190 s) but wrecks reproducibility - the same
+    # animal reads 1.35 mm/s at 2 Hz and 0.91 mm/s at 30 Hz with it on, against
+    # 1.35-1.43 mm/s across that whole range with it off. For a measurement, giving
+    # the same answer matters more than seeing more of the animal, so this is opt-in.
+    #
+    # Solve the joins GLOBALLY, as TrackMate's second LAP stage does, not greedily.
+    # Greedy stitching is order-dependent: one plausible-but-wrong merge blocks a
+    # better one, and coverage went DOWN when the window was widened. One
+    # assignment over all end-to-start pairs has no such ordering.
+    bridge_k = int(round(bridge_s * hz))
+    while bridge_k > 0:
+        alive = [tr for tr in tracks if not tr.get("dead")]
+        if len(alive) < 2:
+            break
+        BIG = 1e9
+        C = np.full((len(alive), len(alive)), BIG)
+        for i, a in enumerate(alive):
+            aa = ref_area(a) or 1.0
+            for j, b in enumerate(alive):
+                if i == j:
+                    continue
+                dk = b["k"][0] - a["k"][-1]
+                if not 0 < dk <= bridge_k:
+                    continue
+                d = math.hypot(b["pts"][0][1] - a["pts"][-1][1],
+                               b["pts"][0][2] - a["pts"][-1][2])
+                # Speed alone is too weak a gate over a long bridge: 30 s at
+                # 4 mm/s permits a jump right across the dish, which would happily
+                # weld two different animals together. Cap the join distance too.
+                if d > min(c["max_speed"] * (dk / hz), BRIDGE_MAX_MM) / mpp:
+                    continue
+                ab = sorted(b["areas"])[len(b["areas"]) // 2]
+                ratio = ab / aa if aa else 1.0
+                if not (1.0 / AREA_RATIO <= ratio <= AREA_RATIO):
+                    continue
+                # Price the join in DISTANCE, not in frames: hop shrinks and dk
+                # grows with the sample rate, so a frame-based penalty made long
+                # bridges look progressively cheaper the faster you sampled, and
+                # the same clip stopped giving the same answer.
+                C[i, j] = d + 0.5 * c["max_speed"] * (dk / hz) / mpp
+        ri, ci = linear_sum_assignment(C)
+        joins = [(i, j) for i, j in zip(ri, ci) if C[i, j] < BIG]
+        if not joins:
+            break
+        for i, j in joins:
+            a, b = alive[i], alive[j]
+            if a.get("dead") or b.get("dead"):
+                continue
+            for key in ("pts", "areas", "focus", "k"):
+                a[key] = a[key] + b[key]
+            a["last"] = b["last"]
+            b["dead"] = True
+
+    before = len(tracks)
+    tracks = [tr for tr in tracks if not tr.get("dead")]
+    log(f"linking: {before} raw tracks -> {len(tracks)} after gap closing")
 
     seen_frac = lambda tr: len(tr["pts"]) / max(len(frames), 1)
     def spread_px(tr):
@@ -1007,6 +1094,9 @@ def main():
     p.add_argument("--no-open", action="store_true", help="don't launch a browser")
     p.add_argument("--video", help="track a file instead of live, for tuning offline")
     p.add_argument("--out", default="run", help="output name prefix for --video")
+    p.add_argument("--bridge-s", type=float, default=0.0,
+                   help="rejoin tracks lost up to N seconds (0 = off; buys coverage, "
+                        "costs reproducibility across sample rates)")
     p.add_argument("--larvae", type=int,
                    help="how many animals are actually in the dish")
     p.add_argument("--stabilise", action="store_true",
@@ -1021,7 +1111,8 @@ def main():
         return demo()
     if a.video:
         St, cir = analyse_video(a.video, a.dish_mm, hz=a.sample_hz,
-                                stabilise=a.stabilise, expect=a.larvae)
+                                stabilise=a.stabilise, expect=a.larvae,
+                                bridge_s=a.bridge_s)
         r = save(os.path.splitext(a.video)[0], St)
         print()
         for row in sorted(r["larvae"], key=lambda x: -x["path"]):
