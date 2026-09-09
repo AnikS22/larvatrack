@@ -726,7 +726,7 @@ def serve(port, open_browser=True):
 
 # ---- offline path (tuning + self-check) --------------------------------------
 def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
-                  expect=None, bridge_s=0.0, log=print):
+                  expect=None, bridge_s=15.0, log=print):
     """Track every larva in a recorded clip, hands off.
 
     Decodes only the sampled frames (grab() skips the rest), cancels camera drift
@@ -938,11 +938,13 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
     # Gap closing: a larva that was missed for a couple of seconds comes back as a
     # brand new track. Join B onto A when B starts soon after A ended, close enough
     # that the animal could have crawled there, and at a consistent size.
-    # Gap closing, off by default. Measured on a real clip: it lifts coverage
-    # (larva 2 from 88 s of span to 190 s) but wrecks reproducibility - the same
-    # animal reads 1.35 mm/s at 2 Hz and 0.91 mm/s at 30 Hz with it on, against
-    # 1.35-1.43 mm/s across that whole range with it off. For a measurement, giving
-    # the same answer matters more than seeing more of the animal, so this is opt-in.
+    # Gap closing, ON by default - decided against ground truth, not by argument.
+    # On a synthetic clip where the larva walks a circle of known circumference
+    # (131.51 mm), measurement error at 2 Hz is -43% without it and -5.7% with it,
+    # because a fragmented track keeps only one fragment. An earlier version of
+    # this file had it off, reasoning that it hurt agreement between sample rates.
+    # That was the wrong criterion: the disagreement was a symptom of the
+    # fragmentation, and accuracy against a known answer outranks self-consistency.
     #
     # Solve the joins GLOBALLY, as TrackMate's second LAP stage does, not greedily.
     # Greedy stitching is order-dependent: one plausible-but-wrong merge blocks a
@@ -1094,9 +1096,8 @@ def main():
     p.add_argument("--no-open", action="store_true", help="don't launch a browser")
     p.add_argument("--video", help="track a file instead of live, for tuning offline")
     p.add_argument("--out", default="run", help="output name prefix for --video")
-    p.add_argument("--bridge-s", type=float, default=0.0,
-                   help="rejoin tracks lost up to N seconds (0 = off; buys coverage, "
-                        "costs reproducibility across sample rates)")
+    p.add_argument("--bridge-s", type=float, default=15.0,
+                   help="rejoin tracks lost up to N seconds (0 = off)")
     p.add_argument("--larvae", type=int,
                    help="how many animals are actually in the dish")
     p.add_argument("--stabilise", action="store_true",
@@ -1347,6 +1348,41 @@ def demo():
         f"long run: area ratcheted {a0:.0f} -> {RL['area']:.0f}"
     assert late < early + 6, \
         f"long run: accuracy decayed over time ({early:.1f} px -> {late:.1f} px)"
+
+    # GROUND TRUTH. A larva walks one lap of a circle whose circumference we know
+    # exactly, so the measured path can be checked against a real answer rather
+    # than against whether it looks plausible. This is the test that decided gap
+    # closing should be on: without it the error here is about -40%.
+    import tempfile as _tf
+    TW = 640; TC = 320; TR = 300; TFPS = 10; TSEC = 60; TN = TFPS * TSEC
+    TPR = 110.0
+    tmpp = 90.0 / (2 * TR)
+    true_mm = 2 * math.pi * TPR * tmpp
+    tpath = os.path.join(_tf.mkdtemp(), "truth.mp4")
+    tw = cv2.VideoWriter(tpath, cv2.VideoWriter_fourcc(*"mp4v"), TFPS, (TW, TW))
+    for i in range(TN):
+        f = np.full((TW, TW, 3), 70, np.uint8)
+        cv2.circle(f, (TC, TC), TR, (150 + int(10 * math.sin(i / TN * math.pi)),) * 3, -1)
+        cv2.circle(f, (TC, TC), TR, (200, 200, 200), 3)
+        cv2.ellipse(f, (TC + 90, TC - 110), (16, 6), 40, 0, 360, (235,) * 3, -1)
+        cv2.ellipse(f, (TC - 100, TC + 95), (14, 6), 100, 0, 360, (232,) * 3, -1)
+        ang = 2 * math.pi * i / TN
+        cv2.ellipse(f, (int(TC + TPR * math.cos(ang)), int(TC + TPR * math.sin(ang))),
+                    (11, 5), int(math.degrees(ang)) + 90, 0, 360, (233,) * 3, -1)
+        tw.write(cv2.add(f, rng.integers(0, 6, f.shape, dtype=np.int16).astype(np.uint8)))
+    tw.release()
+    TS, _ = analyse_video(tpath, 90.0, hz=2.0, expect=1, log=lambda *a: None)
+    TL = list(TS["larvae"].values())[0]
+    tc = larva_cfg(TS, TL)
+    got, _, tgap = path_length(TL["pts"], tc, TL.get("offplane"))
+    tdur = TL["pts"][-1][0] - TL["pts"][0][0]
+    tseen = max(tdur - tgap, 1e-9)
+    err = (got - true_mm) / true_mm
+    speed_err = (got / tseen - true_mm / TSEC) / (true_mm / TSEC)
+    print(f"ground truth: true {true_mm:.2f} mm, measured {got:.2f} mm ({err:+.1%}), "
+          f"speed {speed_err:+.1%}, tracked {tseen:.0f}/{TSEC}s")
+    assert abs(speed_err) < 0.15, f"speed off by {speed_err:+.1%} against a known answer"
+    assert abs(err) < 0.25, f"path off by {err:+.1%} against a known answer"
 
     srv.shutdown()
     page = open(os.path.join(HERE, "index.html")).read()
