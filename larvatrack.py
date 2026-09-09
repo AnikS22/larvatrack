@@ -1412,6 +1412,30 @@ def demo():
     assert abs(speed_err) < 0.15, f"speed off by {speed_err:+.1%} against a known answer"
     assert abs(err) < 0.25, f"path off by {err:+.1%} against a known answer"
 
+    # FALSE POSITIVES. The same dish with the yeast smears and the lighting drift
+    # but NO animal must yield nothing - including when the count says to expect
+    # two. Inventing a track on an empty plate is the failure that would quietly
+    # corrupt a dataset, because the number still looks like a measurement.
+    epath = os.path.join(_tf.mkdtemp(), "empty.mp4")
+    ew = cv2.VideoWriter(epath, cv2.VideoWriter_fourcc(*"mp4v"), TFPS, (TW, TW))
+    for i in range(TFPS * 40):
+        f = np.full((TW, TW, 3), 70, np.uint8)
+        cv2.circle(f, (TC, TC), TR,
+                   (150 + int(14 * math.sin(i / (TFPS * 40) * 2 * math.pi)),) * 3, -1)
+        cv2.circle(f, (TC, TC), TR, (200, 200, 200), 3)
+        cv2.ellipse(f, (TC + 90, TC - 110), (16, 6), 40, 0, 360, (235,) * 3, -1)
+        cv2.ellipse(f, (TC - 80, TC + 120), (15, 6), 95, 0, 360, (233,) * 3, -1)
+        ew.write(cv2.add(f, rng.integers(0, 6, f.shape, dtype=np.int16).astype(np.uint8)))
+    ew.release()
+    for want in (None, 2):
+        try:
+            ES, _ = analyse_video(epath, 90.0, hz=2.0, expect=want, log=lambda *a: None)
+            raise AssertionError(
+                f"invented {len(ES['larvae'])} larvae on an empty dish (--larvae {want})")
+        except TrackingError:
+            pass
+    print("empty dish: nothing invented, with or without an expected count")
+
     # Cheap unit checks for the rules the video path depends on, so they are
     # covered without rebuilding a clip for each one.
     flat_a, flat_f = [100] * 40, [0.5] * 40
