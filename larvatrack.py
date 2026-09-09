@@ -21,6 +21,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # bands and dish-rim arcs are 20:1 and up, dust and bubbles are round - both out.
 LARVA_ELONG = (1.3, 6.0)
 
+class TrackingError(Exception):
+    """Something about this clip or these settings makes tracking impossible."""
+
 # Background estimate for flattening uneven light. Must be well WIDER than a larva
 # or the larva gets absorbed into its own background and disappears.
 FLAT_SIGMA = 51
@@ -73,6 +76,31 @@ def background(gray, sigma=None):
     small = cv2.resize(gray, (max(2, w // f), max(2, h // f)), interpolation=cv2.INTER_AREA)
     small = cv2.GaussianBlur(small, (0, 0), max(1.0, sigma / f))
     return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+
+def mark_offplane(areas, focus, grow=1.15, soften=0.75, run_len=3):
+    """Which samples the animal was off the agar for - on the lid, or up the wall.
+
+    A larva that climbs moves a centimetre or two nearer the lens: it gets bigger
+    and, being off the focused plane, softer. Both at once, sustained, is the
+    signature. Judged against that animal's OWN baseline; comparing sizes between
+    larvae just measures how big each larva is."""
+    n = len(areas)
+    if n < run_len:
+        return [False] * n
+    base_a = sorted(areas)[n // 2]
+    base_f = sorted(focus)[n // 2]
+    def roll(arr, k):
+        seg = sorted(arr[max(0, k - 4):k + 5])
+        return seg[len(seg) // 2]
+    hit = [roll(areas, k) > grow * base_a and roll(focus, k) < soften * base_f
+           for k in range(n)]
+    out, run = [False] * n, 0
+    for k in range(n):                               # only sustained changes count
+        run = run + 1 if hit[k] else 0
+        if run >= run_len:
+            for j in range(k - run + 1, k + 1):
+                out[j] = True
+    return out
 
 def sharpness(gray, cx, cy, rad):
     """How crisp the edges are around a detection.
@@ -734,16 +762,17 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
     tracks them all at once. This is what the raw video backup is for."""
     cap = cv2.VideoCapture(video)
     if not cap.isOpened():
-        sys.exit(f"cannot open {video!r}")
+        raise TrackingError(f"cannot open {video!r}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     step = max(1, round(fps / hz))
     ok, f0 = cap.read()
     if not ok:
-        sys.exit("empty video")
+        raise TrackingError("empty video")
     cir = find_plate(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY))
     if not cir:
-        sys.exit("no petri dish found in the first frame")
+        raise TrackingError("no petri dish rim found in the first frame - is the whole "
+                            "dish in shot?")
     cx, cy, r = cir
     x0, y0, side = int(cx - r), int(cy - r), int(2 * r)
     sub = lambda f: f[max(0, y0):y0 + side, max(0, x0):x0 + side]
@@ -779,7 +808,8 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
         centres.append(track_plate(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), cx, cy, r, scale=2))
     cap.release()
     if len(raw) < 3:
-        sys.exit("not enough frames")
+        raise TrackingError(f"only {len(raw)} usable frames at {hz} Hz - clip too short, "
+                            f"or lower --sample-hz")
 
     known = [k for k, p in enumerate(centres) if p]
     if known:
@@ -1040,22 +1070,8 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
     # the signature. Judged WITHIN a track against that animal's own baseline -
     # comparing sizes between larvae just measures how big each larva is.
     for tr in good:
-        n_ = len(tr["pts"])
-        roll = lambda arr, k: sorted(arr[max(0, k - 4):k + 5])[len(arr[max(0, k - 4):k + 5]) // 2]
-        base_a = sorted(tr["areas"])[n_ // 2]
-        base_f = sorted(tr["focus"])[n_ // 2]
-        flags = []
-        for k in range(n_):
-            ra, rf = roll(tr["areas"], k), roll(tr["focus"], k)
-            flags.append(ra > 1.15 * base_a and rf < 0.75 * base_f)
-        run, out = 0, [False] * n_                   # only sustained changes count
-        for k in range(n_):
-            run = run + 1 if flags[k] else 0
-            if run >= 3:
-                for j in range(k - run + 1, k + 1):
-                    out[j] = True
-        tr["offplane"] = out
-        tr["off_s"] = sum(out) / hz
+        tr["offplane"] = mark_offplane(tr["areas"], tr["focus"])
+        tr["off_s"] = sum(tr["offplane"]) / hz
 
     log("parallax (motion that follows the camera; ~0 = on the agar):")
     for tr in good:
@@ -1072,7 +1088,16 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
             log(f"   track n={len(fs):4d} focus median={fs[len(fs)//2]:.3f} "
                 f"min={fs[0]:.3f} max={fs[-1]:.3f}")
     if not good:
-        sys.exit("no persistent tracks - check --dish-mm, or the larvae never moved")
+        # Say WHY. The commonest cause by far is a wrong --dish-mm: the plausible
+        # larva size is derived from it, so a dish declared twice its real width
+        # sets an area window that excludes every real animal.
+        sizes = sorted(a for pl in dets for (_x, _y, a, _f) in pl)
+        seen_hint = (f"blobs seen ranged {sizes[0]:.0f}-{sizes[-1]:.0f} px"
+                     if sizes else "no blobs at all passed the size filter")
+        raise TrackingError(
+            f"no track lasted 20% of the clip. Larva size window was {lo}-{hi} px "
+            f"(from --dish-mm {dish_mm:g}); {seen_hint}. If that window looks wrong "
+            f"for your animals, --dish-mm is probably wrong.")
 
     larvae = {}
     for i, tr in enumerate(good, 1):
@@ -1111,6 +1136,7 @@ def main():
     if a.demo:
         return demo()
     if a.video:
+      try:
         St, cir = analyse_video(a.video, a.dish_mm, hz=a.sample_hz,
                                 stabilise=a.stabilise, expect=a.larvae,
                                 bridge_s=a.bridge_s)
@@ -1130,7 +1156,9 @@ def main():
                   f"  tracked {seen:4.0f}/{row['duration']:.0f}s"
                   + (f"  off-agar {row['off_s']:.0f}s" if row['off_s'] else "") + flag)
         print(f"\nwrote {r['stem']}_tracks.csv, _summary.csv, _overlay.png")
-        return
+      except TrackingError as e:
+        sys.exit(f"larvatrack: {e}")
+      return
     serve(a.port, not a.no_open)
 
 def demo():
@@ -1383,6 +1411,32 @@ def demo():
           f"speed {speed_err:+.1%}, tracked {tseen:.0f}/{TSEC}s")
     assert abs(speed_err) < 0.15, f"speed off by {speed_err:+.1%} against a known answer"
     assert abs(err) < 0.25, f"path off by {err:+.1%} against a known answer"
+
+    # Cheap unit checks for the rules the video path depends on, so they are
+    # covered without rebuilding a clip for each one.
+    flat_a, flat_f = [100] * 40, [0.5] * 40
+    assert not any(mark_offplane(flat_a, flat_f)), "off-agar fired on a steady track"
+    lid_a = flat_a[:15] + [140] * 10 + flat_a[25:]
+    lid_f = flat_f[:15] + [0.3] * 10 + flat_f[25:]
+    marked = mark_offplane(lid_a, lid_f)
+    assert 8 <= sum(marked) <= 12, f"lid climb marked {sum(marked)} of 10 samples"
+    assert not any(marked[:14]) and not any(marked[26:]), "off-agar bled outside the climb"
+    assert not any(mark_offplane(lid_a, flat_f)), "bigger alone must not count as off-agar"
+    assert not any(mark_offplane(flat_a, lid_f)), "softer alone must not count as off-agar"
+
+    lin = [(0.5, 0), (1.0, 0), (1.5, 0)]
+    lin = [(t, x * 100, 0.0) for t, x, _ in ((0.0, 0, 0), (0.5, 1, 0), (1.0, 2, 0))]
+    p1 = path_length(lin, dict(D, mm_per_px=0.1, sample_hz=2.0))[0]
+    p2 = path_length(lin, dict(D, mm_per_px=0.2, sample_hz=2.0))[0]
+    assert abs(p2 - 2 * p1) < 1e-9, f"path is not linear in scale: {p1} then {p2}"
+
+    try:
+        analyse_video(os.path.join(HERE, "does-not-exist.mp4"), 90.0, log=lambda *a: None)
+        raise AssertionError("a missing video should raise TrackingError")
+    except TrackingError:
+        pass
+    print("rules: off-agar needs BOTH bigger and softer; path scales linearly; "
+          "bad input raises rather than exits")
 
     srv.shutdown()
     page = open(os.path.join(HERE, "index.html")).read()
