@@ -776,6 +776,11 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
     cx, cy, r = cir
     x0, y0, side = int(cx - r), int(cy - r), int(2 * r)
     sub = lambda f: f[max(0, y0):y0 + side, max(0, x0):x0 + side]
+    # Where the dish centre lands INSIDE the crop. When the dish runs past a frame
+    # edge the crop is clipped, so the centre is not at (r, r) - and masking as if
+    # it were shaved real agar off one side while leaving bench visible on the
+    # other, which is how trails ended up outside the drawn rim.
+    ccx, ccy = cx - max(0, x0), cy - max(0, y0)
     g0f = cv2.cvtColor(sub(f0), cv2.COLOR_BGR2GRAY)
     mpp = dish_mm / (2 * r)
     lo, hi = area_bounds(mpp)
@@ -845,7 +850,7 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
         if math.hypot(*d) > 1.0:                     # sub-pixel drift is not worth warping
             g = cv2.warpAffine(g, np.float32([[1, 0, -d[0]], [0, 1, -d[1]]]),
                                (g.shape[1], g.shape[0]), borderMode=cv2.BORDER_REPLICATE)
-        frames.append(mask_dish(g, r, r, r, shrink=c["edge_pct"] / 100.0))
+        frames.append(mask_dish(g, ccx, ccy, r, shrink=c["edge_pct"] / 100.0))
 
     # Everything that never moves - the pen writing, the rim, the bench, slow
     # condensation - is the per-pixel median over the clip. Subtract it and only
@@ -1172,15 +1177,24 @@ def write_overlay_video(video, St, cir, out, hz, size=760, log=print):
                               False, L["bgr"], 2, cv2.LINE_AA)
             if k >= 1:
                 here, isoff = P(L["pts"][k - 1]), L["off"][k - 1]
-                fresh = t - L["pts"][k - 1][0] < 1.0        # solid only while current
-                cv2.circle(im, here, 11 if isoff else 8, L["bgr"],
-                           2 if (isoff or not fresh) else -1, cv2.LINE_AA)
+                fresh = t - L["pts"][k - 1][0] < 1.0
+                # Three states, three shapes: solid = tracking now, ring + label =
+                # off the agar, cross = lost. Two different things drawn the same
+                # way is the fastest route to misreading your own output.
                 if isoff:
-                    cv2.putText(im, "off agar", (here[0] + 14, here[1] + 5),
+                    cv2.circle(im, here, 11, L["bgr"], 2, cv2.LINE_AA)
+                    cv2.putText(im, "off agar", (here[0] + 15, here[1] + 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, .45, L["bgr"], 1, cv2.LINE_AA)
                 elif fresh:
+                    cv2.circle(im, here, 8, L["bgr"], -1, cv2.LINE_AA)
                     cv2.putText(im, L["name"], (here[0] + 12, here[1] - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, .5, L["bgr"], 1, cv2.LINE_AA)
+                else:
+                    for dx, dy in ((-6, -6, ), (-6, 6)):
+                        cv2.line(im, (here[0] + dx, here[1] + dy),
+                                 (here[0] - dx, here[1] - dy), L["bgr"], 2, cv2.LINE_AA)
+                    cv2.putText(im, "lost", (here[0] + 12, here[1] + 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, .45, L["bgr"], 1, cv2.LINE_AA)
             cv2.putText(im, f"{L['name']}: {L['cum'][max(0, k - 1)]:6.1f} {unit}",
                         (10, y_hud), cv2.FONT_HERSHEY_SIMPLEX, .55, L["bgr"], 2, cv2.LINE_AA)
             y_hud += 24
@@ -1518,6 +1532,19 @@ def demo():
         except TrackingError:
             pass
     print("empty dish: nothing invented, with or without an expected count")
+
+    # Nothing may be tracked outside the masked dish. This failed on real footage
+    # where the dish overran a frame edge: the crop is clipped, so the dish centre
+    # is not at (r, r), and masking as if it were left bench visible on one side.
+    TS2, tcir = analyse_video(tpath, 90.0, hz=2.0, expect=1, log=lambda *a: None)
+    tcx, tcy, trr = tcir
+    tx0, ty0 = int(tcx - trr), int(tcy - trr)
+    ox, oy = tcx - max(0, tx0), tcy - max(0, ty0)
+    worst = max(math.hypot(p[1] - ox, p[2] - oy) / trr
+                for L in TS2["larvae"].values() for p in L["pts"])
+    assert worst <= D["edge_pct"] / 100.0 + 0.02, \
+        f"tracked {worst:.3f} of the radius out, past the {D['edge_pct']}% mask"
+    print(f"inside the dish: furthest sample {worst:.3f} of the radius")
 
     # Cheap unit checks for the rules the video path depends on, so they are
     # covered without rebuilding a clip for each one.
