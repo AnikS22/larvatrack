@@ -1115,12 +1115,92 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
     return ({"dishes": {}, "larvae": larvae, "cfg": c,
              "frame": cv2.cvtColor(frames[-1], cv2.COLOR_GRAY2BGR)}, cir)
 
+def write_overlay_video(video, St, cir, out, hz, size=760, log=print):
+    """Replay the clip with each trail drawn as it is laid down.
+
+    Shows what the tracker believed at every moment: the path so far, where it
+    thinks the animal is right now, and a hollow marker for samples it judged to
+    be off the agar. Cropped to the dish, because that is the only part measured."""
+    cap = cv2.VideoCapture(video)
+    if not cap.isOpened():
+        raise TrackingError(f"cannot open {video!r}")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    cx, cy, r = cir
+    x0, y0, side = int(cx - r), int(cy - r), int(2 * r)
+    # The dish can run past the frame edge, so the crop is not always 2r square.
+    # Measure it once from a real frame and map coordinates with what we got, not
+    # with what we assumed - assuming cost every frame of the first attempt.
+    ok, probe = cap.read()
+    if not ok:
+        raise TrackingError("empty video")
+    ch, cw = probe[max(0, y0):y0 + side, max(0, x0):x0 + side].shape[:2]
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    sx, sy = size / float(cw), size / float(ch)
+    vw = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"mp4v"), fps, (size, size))
+    if not vw.isOpened():
+        raise TrackingError(f"cannot write {out!r}")
+
+    lar = []
+    for L in St["larvae"].values():
+        off = L.get("offplane") or [False] * len(L["pts"])
+        lar.append({"name": L["name"], "bgr": bgr(L["color"]),
+                    "pts": L["pts"], "off": off,
+                    "cum": path_length(L["pts"], larva_cfg(St, L), off)[1]})
+    unit = "mm" if St["cfg"]["mm_per_px"] != 1.0 else "px"
+    P = lambda p: (int(round(p[1] * sx)), int(round(p[2] * sy)))
+
+    i, n = -1, 0
+    while True:
+        ok, f = cap.read()
+        if not ok:
+            break
+        i += 1
+        t = i / fps
+        crop = f[max(0, y0):y0 + side, max(0, x0):x0 + side]
+        if crop.shape[0] != ch or crop.shape[1] != cw:
+            continue
+        im = cv2.resize(crop, (size, size))
+        cv2.ellipse(im, (int((cx - max(0, x0)) * sx), int((cy - max(0, y0)) * sy)),
+                    (int(r * sx), int(r * sy)), 0, 0, 360, (110, 110, 110), 1, cv2.LINE_AA)
+        y_hud = 26
+        for L in lar:
+            k = 0
+            while k < len(L["pts"]) and L["pts"][k][0] <= t:
+                k += 1
+            if k >= 2:
+                cv2.polylines(im, [np.array([P(p) for p in L["pts"][:k]], np.int32)],
+                              False, L["bgr"], 2, cv2.LINE_AA)
+            if k >= 1:
+                here, isoff = P(L["pts"][k - 1]), L["off"][k - 1]
+                fresh = t - L["pts"][k - 1][0] < 1.0        # solid only while current
+                cv2.circle(im, here, 11 if isoff else 8, L["bgr"],
+                           2 if (isoff or not fresh) else -1, cv2.LINE_AA)
+                if isoff:
+                    cv2.putText(im, "off agar", (here[0] + 14, here[1] + 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, .45, L["bgr"], 1, cv2.LINE_AA)
+                elif fresh:
+                    cv2.putText(im, L["name"], (here[0] + 12, here[1] - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, .5, L["bgr"], 1, cv2.LINE_AA)
+            cv2.putText(im, f"{L['name']}: {L['cum'][max(0, k - 1)]:6.1f} {unit}",
+                        (10, y_hud), cv2.FONT_HERSHEY_SIMPLEX, .55, L["bgr"], 2, cv2.LINE_AA)
+            y_hud += 24
+        cv2.putText(im, f"{t:5.1f}s", (size - 92, 26), cv2.FONT_HERSHEY_SIMPLEX,
+                    .6, (240, 240, 240), 2, cv2.LINE_AA)
+        vw.write(im)
+        n += 1
+    cap.release()
+    vw.release()
+    log(f"wrote {out} ({n} frames, {n / fps:.0f}s)")
+    return out
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=8777)
     p.add_argument("--no-open", action="store_true", help="don't launch a browser")
     p.add_argument("--video", help="track a file instead of live, for tuning offline")
     p.add_argument("--out", default="run", help="output name prefix for --video")
+    p.add_argument("--overlay-video", action="store_true",
+                   help="also write a replay with the trails drawn as they happen")
     p.add_argument("--bridge-s", type=float, default=15.0,
                    help="rejoin tracks lost up to N seconds (0 = off)")
     p.add_argument("--larvae", type=int,
@@ -1156,6 +1236,9 @@ def main():
                   f"  tracked {seen:4.0f}/{row['duration']:.0f}s"
                   + (f"  off-agar {row['off_s']:.0f}s" if row['off_s'] else "") + flag)
         print(f"\nwrote {r['stem']}_tracks.csv, _summary.csv, _overlay.png")
+        if a.overlay_video:
+            write_overlay_video(a.video, St, cir,
+                                os.path.splitext(a.video)[0] + "_tracked.mp4", a.sample_hz)
       except TrackingError as e:
         sys.exit(f"larvatrack: {e}")
       return
