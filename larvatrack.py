@@ -779,7 +779,7 @@ def serve(port, open_browser=True):
 
 # ---- offline path (tuning + self-check) --------------------------------------
 def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
-                  expect=None, bridge_s=15.0, log=print):
+                  expect=None, bridge_s=15.0, edge_pct=99.0, log=print):
     """Track every larva in a recorded clip, hands off.
 
     Decodes only the sampled frames (grab() skips the rest), cancels camera drift
@@ -804,7 +804,13 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
     g0f = cv2.cvtColor(sub(f0), cv2.COLOR_BGR2GRAY)
     mpp = dish_mm / (2 * r)
     lo, hi = area_bounds(mpp)
-    c = dict(D, mm_per_px=mpp, min_area=lo, max_area=hi,
+    # Keep nearly the whole dish. The live tracker blanks the outer 10% because it
+    # segments a single frame and the bright rim out-contrasts a larva; here every
+    # frame is differenced against a rolling median, so the static rim is already
+    # gone and blanking that band only loses wall-following animals. Measured on a
+    # synthetic larva pressed to the wall for 60% of a clip: -0.2% error at 97% of
+    # the radius against an outright refusal to track at 90%.
+    c = dict(D, mm_per_px=mpp, min_area=lo, max_area=hi, edge_pct=edge_pct,
              sample_hz=hz, max_jump=int(3.0 / mpp))     # 3 mm between samples
     log(f"dish r={r:.0f}px -> {mpp:.5f} mm/px | larva {lo}-{hi}px | "
         f"sampling {hz} Hz ({total / fps:.0f}s of video)")
@@ -1244,7 +1250,7 @@ def main():
       try:
         St, cir = analyse_video(a.video, a.dish_mm, hz=a.sample_hz,
                                 stabilise=a.stabilise, expect=a.larvae,
-                                bridge_s=a.bridge_s)
+                                bridge_s=a.bridge_s, edge_pct=a.edge_pct)
         r = save(os.path.splitext(a.video)[0], St)
         print()
         for row in sorted(r["larvae"], key=lambda x: -x["path"]):
@@ -1519,6 +1525,46 @@ def demo():
           f"speed {speed_err:+.1%}, tracked {tseen:.0f}/{TSEC}s")
     assert abs(speed_err) < 0.15, f"speed off by {speed_err:+.1%} against a known answer"
     assert abs(err) < 0.25, f"path off by {err:+.1%} against a known answer"
+
+    # WALL FOLLOWING. Larvae hug the dish wall, and that is when they cover the
+    # most ground, so losing the outer band biases the assay against exactly the
+    # animals it is meant to measure. This is the case the old 90% edge mask failed
+    # outright: it refused to track at all.
+    # Scale matters here: at r=190 px the 10 px larva merges with the rim and this
+    # fails, at r=265 px it tracks perfectly right up to the wall. Real footage has
+    # r~510 px. The test uses realistic proportions rather than the smallest frame
+    # that runs quickly, because the small frame tests the wrong thing.
+    WW = 560; WC = 280; WR = 265; WFPS = 10; WSEC = 60; WN = WFPS * WSEC
+    wmpp = 90.0 / (2 * WR)
+    wrad = 0.96 * WR                                 # pressed to the wall throughout
+    wpos = lambda i: (WC + wrad * math.cos(2 * math.pi * 0.35 * i / WN),
+                      WC + wrad * math.sin(2 * math.pi * 0.35 * i / WN))
+    wtrue = sum(math.hypot(wpos(i)[0] - wpos(i - 1)[0], wpos(i)[1] - wpos(i - 1)[1])
+                for i in range(1, WN)) * wmpp
+    wpath = os.path.join(_tf.mkdtemp(), "wall.mp4")
+    ww = cv2.VideoWriter(wpath, cv2.VideoWriter_fourcc(*"mp4v"), WFPS, (WW, WW))
+    for i in range(WN):
+        f = np.full((WW, WW, 3), 70, np.uint8)
+        cv2.circle(f, (WC, WC), WR, (150,) * 3, -1)
+        cv2.circle(f, (WC, WC), WR, (215,) * 3, 3)           # bright rim highlight
+        cv2.ellipse(f, (WC + 70, WC - 110), (14, 6), 40, 0, 360, (235,) * 3, -1)
+        wx, wy = wpos(i)
+        cv2.ellipse(f, (int(wx), int(wy)), (10, 5),
+                    int(math.degrees(math.atan2(wy - WC, wx - WC))) + 90,
+                    0, 360, (233,) * 3, -1)
+        ww.write(cv2.add(f, rng.integers(0, 6, f.shape, dtype=np.int16).astype(np.uint8)))
+    ww.release()
+    WS, _ = analyse_video(wpath, 90.0, hz=2.0, expect=1, log=lambda *a: None)
+    WL = list(WS["larvae"].values())[0]
+    wc_ = larva_cfg(WS, WL)
+    wgot, _, wgap = path_length(WL["pts"], wc_, WL.get("offplane"))
+    wdur = WL["pts"][-1][0] - WL["pts"][0][0]
+    wseen = max(wdur - wgap, 1e-9)
+    werr = (wgot - wtrue) / wtrue
+    print(f"wall-following: true {wtrue:.1f} mm, measured {wgot:.1f} mm ({werr:+.1%}), "
+          f"tracked {wseen:.0f}/{WSEC}s")
+    assert wseen > 0.8 * WSEC, f"lost a wall-follower for {WSEC - wseen:.0f}s of {WSEC}s"
+    assert abs(werr) < 0.20, f"wall-following path off by {werr:+.1%}"
 
     # FALSE POSITIVES. The same dish with the yeast smears and the lighting drift
     # but NO animal must yield nothing - including when the count says to expect
