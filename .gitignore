@@ -7,3 +7,7 @@ run_*.webm
 lock_debug.png
 __pycache__/
 .DS_Store
+uploads/
+web/node_modules/
+web/.vercel/
+web/.env.local

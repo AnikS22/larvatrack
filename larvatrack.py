@@ -9,7 +9,7 @@ Camera connection properly, which OpenCV on macOS does not). It posts frames
 here at --sample-hz; this file does the tracking and writes the files.
 Nothing is recorded - only the final CSVs and an overlay PNG are saved.
 """
-import argparse, csv, io, json, math, os, sys, threading, time, webbrowser
+import argparse, base64, csv, io, json, math, os, sys, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 import cv2, numpy as np
@@ -680,6 +680,70 @@ def save(stem, S):
         cv2.imwrite(stem + "_overlay.png", im)
     return {"stem": os.path.basename(stem), "unit": unit, "larvae": rows}
 
+# Uploads are processed on this machine, so the only real limits are politeness
+# ones. Two at a time keeps a classmate's upload from starving another's.
+JOBS = threading.Semaphore(2)
+UPLOAD_DIR = os.path.join(HERE, "uploads")
+UPLOAD_PASSWORD = os.environ.get("LARVATRACK_PASSWORD", "")
+
+def handle_upload(body_reader, length, q, log=print):
+    """Stream an uploaded clip to disk, measure it, and return plain numbers."""
+    if length <= 0:
+        raise TrackingError("no video was sent")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    who = "".join(ch for ch in (q.get("who") or "anon")[:24]
+                  if ch.isalnum() or ch in "-_") or "anon"
+    path = os.path.join(UPLOAD_DIR, f"{who}_{stamp}.mp4")
+    got = 0
+    with open(path, "wb") as f:                      # stream: never hold it in memory
+        while got < length:
+            chunk = body_reader.read(min(1 << 20, length - got))
+            if not chunk:
+                break
+            f.write(chunk)
+            got += len(chunk)
+    log(f"received {got / 1e6:.0f} MB from {who}")
+
+    dish_mm = float(q.get("dish_mm") or 90.0)
+    if not 20.0 <= dish_mm <= 200.0:
+        raise TrackingError("dish diameter should be 20-200 mm")
+    larvae = int(float(q.get("larvae") or 0))
+    hz = float(q.get("hz") or 2.0)
+
+    with JOBS:                                       # bound the concurrency, not the size
+        S, cir = analyse_video(path, dish_mm, hz=hz, expect=larvae or None, log=log)
+    stem = os.path.splitext(path)[0]
+    saved = save(stem, S)
+    if q.get("overlay_video"):
+        write_overlay_video(path, S, cir, stem + "_tracked.mp4", hz, log=log)
+
+    unit = saved["unit"]
+    rows = []
+    for L in S["larvae"].values():
+        c = larva_cfg(S, L)
+        total, _cum, gap, bridged = path_length(L["pts"], c, L.get("offplane"))
+        dur = L["pts"][-1][0] - L["pts"][0][0]
+        seen = max(dur - gap, 1e-9)
+        p0 = L["pts"][0]
+        spread = max(math.hypot(p[1] - p0[1], p[2] - p0[2])
+                     for p in L["pts"]) * c["mm_per_px"]
+        rows.append({"name": L["name"], "observed": round(total, 1),
+                     "gapChords": round(bridged, 1),
+                     "lowerBound": round(total + bridged, 1),
+                     "speed": round(total / seen, 2),
+                     "estimate5min": round(total / seen * 300.0, 1),
+                     "spread": round(spread, 1), "trackedSeconds": round(seen),
+                     "spanSeconds": round(dur), "offAgarSeconds": round(L.get("off_s", 0.0)),
+                     "samples": len(L["pts"])})
+    rows.sort(key=lambda r: -r["observed"])
+    png = stem + "_overlay.png"
+    return {"unit": unit, "dishRadiusPx": round(cir[2]),
+            "mmPerPx": round(S["cfg"]["mm_per_px"], 5), "larvae": rows,
+            "files": os.path.basename(stem), "megabytes": round(got / 1e6),
+            "overlay": ("data:image/png;base64," + base64.b64encode(
+                open(png, "rb").read()).decode()) if os.path.exists(png) else None}
+
 def dish_crop(frame, q):
     """The page sends the dish's bounding box; blank the corners outside the rim."""
     r = float(q.get("dish_r") or 0)
@@ -702,15 +766,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if urlparse(self.path).path != "/":
+        route = urlparse(self.path).path
+        page = {"/": "index.html", "/upload": "upload.html"}.get(route)
+        if not page:
             return self._send(404, b"not found", "text/plain")
-        with open(os.path.join(HERE, "index.html"), "rb") as f:
+        with open(os.path.join(HERE, page), "rb") as f:
             self._send(200, f.read(), "text/html; charset=utf-8")
 
     def do_POST(self):
         route = urlparse(self.path).path
         q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
-        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body = (b"" if urlparse(self.path).path == "/video"
+                else self.rfile.read(int(self.headers.get("Content-Length") or 0)))
         for k, v in q.items():                        # sliders in the page drive the knobs
             if k in D:
                 S["cfg"][k] = type(D[k])(float(v))
@@ -718,6 +785,22 @@ class Handler(BaseHTTPRequestHandler):
             cv2.imdecode(np.frombuffer(body, np.uint8), cv2.IMREAD_COLOR) if body else None)
         if frame is not None and route in ("/frame", "/plate", "/add"):
             frame = dish_crop(frame, q)
+
+        if route == "/video":
+            # A whole clip arrives here, so it is streamed to disk rather than read
+            # into memory like every other route's small JPEG body.
+            if UPLOAD_PASSWORD and q.get("password") != UPLOAD_PASSWORD:
+                return self._send(401, json.dumps({"error": "wrong password"}))
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                out = handle_upload(self.rfile, n, q,
+                                    log=lambda m: print(f"  [upload] {m}", flush=True))
+                return self._send(200, json.dumps(out))
+            except TrackingError as e:
+                return self._send(422, json.dumps({"error": str(e)}))
+            except Exception as e:
+                print("upload failed:", repr(e), flush=True)
+                return self._send(500, json.dumps({"error": "could not process that video"}))
 
         if route == "/reset":
             which = q.get("id")
@@ -834,6 +917,9 @@ def serve(port, open_browser=True):
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://localhost:{port}"
     print(f"larvatrack on {url}   (ctrl-C to stop)")
+    print(f"  live tracking   {url}/")
+    print(f"  video uploads   {url}/upload"
+          + ("   [password set]" if UPLOAD_PASSWORD else "   [no password]"))
     print("the browser will ask for camera permission - allow it, then pick your iPhone")
     if open_browser:
         threading.Timer(0.5, webbrowser.open, [url]).start()
