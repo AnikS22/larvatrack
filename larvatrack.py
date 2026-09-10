@@ -383,19 +383,23 @@ def path_length(pts, c, offplane=None):
     sm = smooth_xy(pts, hz)
     span = 1.5 / hz                                  # a step longer than this is a gap
     floor = c["noise_floor"] if (not mpp or mpp == 1.0) else 0.0
-    total, cum, gap = 0.0, [0.0], 0.0
+    total, cum, gap, bridged = 0.0, [0.0], 0.0, 0.0
     for i, ((t0, x0, y0), (t1, x1, y1)) in enumerate(zip(sm, sm[1:])):
         # A step measured while the animal was off the agar is at a different
         # magnification, so its length in mm is simply wrong. Treat it as a gap.
-        if offplane and (offplane[i] or offplane[i + 1]):
+        lost = (offplane and (offplane[i] or offplane[i + 1])) or (t1 - t0 > span)
+        if lost:
             gap += t1 - t0
-        elif t1 - t0 > span:
-            gap += t1 - t0
+            # We never saw the route, so this chord is NOT path. But the animal
+            # did get from one end to the other, so the chord is the least it can
+            # have travelled - a defensible lower bound on what the gap cost,
+            # which is better information than the zero we would otherwise imply.
+            bridged += math.hypot(x1 - x0, y1 - y0) * mpp
         else:
             d = math.hypot(x1 - x0, y1 - y0)
             total += d * mpp if d >= floor else 0.0
         cum.append(total)
-    return total, cum, gap
+    return total, cum, gap, bridged
 
 def reach_px(L, c, t):
     """How far the larva could REALLY have gone since we last saw it.
@@ -518,7 +522,7 @@ def draw(frame, pts, c, elapsed):
     return frame
 
 def save(stem, pts, frame, c):
-    total, cum, _gap = path_length(pts, c)
+    total, cum, _gap, _br = path_length(pts, c)
     dur = pts[-1][0] - pts[0][0]
     with open(stem + "_track.csv", "w", newline="") as f:
         w = csv.writer(f)
@@ -566,13 +570,14 @@ def save(stem, S):
         w = csv.writer(f)
         w.writerow(["dish", "larva", "name", "duration_s", "gap_s", "samples",
                     "mm_per_px", f"path_length_{unit}", f"mean_speed_{unit}_per_s",
-                    f"spread_{unit}", "off_agar_s", f"est_5min_{unit}"])
+                    f"spread_{unit}", "off_agar_s", f"est_5min_{unit}",
+                    f"gap_chords_{unit}", f"path_lower_bound_{unit}"])
         for lid, L in S["larvae"].items():
             if len(L["pts"]) < 2:
                 continue
             c = larva_cfg(S, L)
             dur = L["pts"][-1][0] - L["pts"][0][0]
-            total, _c, gap = path_length(L["pts"], c, L.get("offplane"))
+            total, _c, gap, bridged = path_length(L["pts"], c, L.get("offplane"))
             seen = max(dur - gap, 1e-9)
             # How far it ever got from where it started. A real trail spreads out;
             # a jitter cluster on a droplet or a speck never leaves a few mm. This
@@ -593,9 +598,11 @@ def save(stem, S):
             est5 = total / seen * 300.0
             w.writerow([dn(L), lid, L["name"], f"{dur:.1f}", f"{gap:.1f}", len(L["pts"]),
                         c["mm_per_px"], f"{total:.2f}", f"{total / seen:.3f}",
-                        f"{spread:.2f}", f"{L.get('off_s', 0.0):.1f}", f"{est5:.1f}"])
+                        f"{spread:.2f}", f"{L.get('off_s', 0.0):.1f}", f"{est5:.1f}",
+                        f"{bridged:.2f}", f"{total + bridged:.2f}"])
             rows.append({"name": L["name"], "dish": dn(L), "path": round(total, 2),
-                         "est5": round(est5, 1),
+                         "est5": round(est5, 1), "bridged": round(bridged, 2),
+                         "floor": round(total + bridged, 2),
                          "duration": round(dur, 1), "gap_s": round(gap, 1),
                          "spread": round(spread, 1), "samples": len(L["pts"]),
                          "off_s": round(L.get("off_s", 0.0), 1)})
@@ -1199,8 +1206,35 @@ def write_overlay_video(video, St, cir, out, hz, size=760, log=print):
             while k < len(L["pts"]) and L["pts"][k][0] <= t:
                 k += 1
             if k >= 2:
-                cv2.polylines(im, [np.array([P(p) for p in L["pts"][:k]], np.int32)],
-                              False, L["bgr"], 2, cv2.LINE_AA)
+                # Solid where the route was observed; a faint dashed chord where it
+                # was not. Drawing a gap as solid path would claim we saw a straight
+                # line the animal never necessarily walked.
+                span_s = 1.5 / max(hz, 1e-3)
+                seg = []
+                for j in range(k):
+                    p = L["pts"][j]
+                    broke = j and (p[0] - L["pts"][j - 1][0] > span_s
+                                   or L["off"][j] or L["off"][j - 1])
+                    if broke:
+                        if len(seg) > 1:
+                            cv2.polylines(im, [np.array(seg, np.int32)], False,
+                                          L["bgr"], 2, cv2.LINE_AA)
+                        a_, b_ = P(L["pts"][j - 1]), P(p)
+                        n_ = max(1, int(math.hypot(b_[0] - a_[0], b_[1] - a_[1]) / 9))
+                        for q in range(0, n_, 2):     # dashes, so a gap reads as a gap
+                            f0, f1 = q / n_, min(1.0, (q + 1) / n_)
+                            cv2.line(im,
+                                     (int(a_[0] + (b_[0] - a_[0]) * f0),
+                                      int(a_[1] + (b_[1] - a_[1]) * f0)),
+                                     (int(a_[0] + (b_[0] - a_[0]) * f1),
+                                      int(a_[1] + (b_[1] - a_[1]) * f1)),
+                                     L["bgr"], 1, cv2.LINE_AA)
+                        seg = [b_]
+                    else:
+                        seg.append(P(p))
+                if len(seg) > 1:
+                    cv2.polylines(im, [np.array(seg, np.int32)], False,
+                                  L["bgr"], 2, cv2.LINE_AA)
             if k >= 1:
                 here, isoff = P(L["pts"][k - 1]), L["off"][k - 1]
                 fresh = t - L["pts"][k - 1][0] < 1.0        # solid only while current
@@ -1262,7 +1296,8 @@ def main():
                     else "" if row["spread"] >= 5 else "   <- stayed put, check it")
             print(f"  {row['name']:9s} {row['path'] / seen:4.2f} {r['unit']}/s"
                   f"  ->5min {row['est5']:6.1f} {r['unit']}"
-                  f"  (seen {row['path']:6.1f} {r['unit']}"
+                  f"  (seen {row['path']:6.1f}"
+                  f" +{row['bridged']:5.1f} across gaps = {row['floor']:6.1f} min"
                   f"  spread {row['spread']:5.1f})"
                   f"  tracked {seen:4.0f}/{row['duration']:.0f}s"
                   + (f"  off-agar {row['off_s']:.0f}s" if row['off_s'] else "") + flag)
@@ -1516,7 +1551,7 @@ def demo():
     TS, _ = analyse_video(tpath, 90.0, hz=2.0, expect=1, log=lambda *a: None)
     TL = list(TS["larvae"].values())[0]
     tc = larva_cfg(TS, TL)
-    got, _, tgap = path_length(TL["pts"], tc, TL.get("offplane"))
+    got, _, tgap, _tb = path_length(TL["pts"], tc, TL.get("offplane"))
     tdur = TL["pts"][-1][0] - TL["pts"][0][0]
     tseen = max(tdur - tgap, 1e-9)
     err = (got - true_mm) / true_mm
@@ -1557,7 +1592,7 @@ def demo():
     WS, _ = analyse_video(wpath, 90.0, hz=2.0, expect=1, log=lambda *a: None)
     WL = list(WS["larvae"].values())[0]
     wc_ = larva_cfg(WS, WL)
-    wgot, _, wgap = path_length(WL["pts"], wc_, WL.get("offplane"))
+    wgot, _, wgap, _wb = path_length(WL["pts"], wc_, WL.get("offplane"))
     wdur = WL["pts"][-1][0] - WL["pts"][0][0]
     wseen = max(wdur - wgap, 1e-9)
     werr = (wgot - wtrue) / wtrue
@@ -1602,7 +1637,17 @@ def demo():
     assert not any(mark_offplane(lid_a, flat_f)), "bigger alone must not count as off-agar"
     assert not any(mark_offplane(flat_a, lid_f)), "softer alone must not count as off-agar"
 
-    lin = [(0.5, 0), (1.0, 0), (1.5, 0)]
+    # A gap's chord must be measured, not ignored: we did not see the route, but
+    # the animal did get from one end to the other, so the chord is the least it
+    # can have travelled.
+    gapped = [(0.0, 0.0, 0.0), (0.5, 100.0, 0.0),      # observed: 100 px
+              (9.0, 400.0, 0.0), (9.5, 500.0, 0.0)]    # 8.5 s gap of 300 px, then 100
+    gt, _gc, gg, gb = path_length(gapped, dict(D, mm_per_px=0.1, sample_hz=2.0,
+                                               noise_floor=0.0))
+    assert abs(gg - 8.5) < 1e-6, f"gap time {gg}"
+    assert abs(gb - 30.0) < 1.0, f"chord across the gap measured {gb}, expected 30 mm"
+    assert gt < 30.0, f"the unobserved chord leaked into the observed path: {gt}"
+
     lin = [(t, x * 100, 0.0) for t, x, _ in ((0.0, 0, 0), (0.5, 1, 0), (1.0, 2, 0))]
     p1 = path_length(lin, dict(D, mm_per_px=0.1, sample_hz=2.0))[0]
     p2 = path_length(lin, dict(D, mm_per_px=0.2, sample_hz=2.0))[0]
