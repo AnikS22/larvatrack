@@ -786,7 +786,8 @@ def serve(port, open_browser=True):
 
 # ---- offline path (tuning + self-check) --------------------------------------
 def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
-                  expect=None, bridge_s=15.0, edge_pct=99.0, log=print):
+                  expect=None, bridge_s=15.0, edge_pct=99.0,
+                  detections_only=False, log=print):
     """Track every larva in a recorded clip, hands off.
 
     Decodes only the sampled frames (grab() skips the rest), cancels camera drift
@@ -910,7 +911,19 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
     # on a frame where nothing is there.
     probe = cv2.GaussianBlur(cv2.absdiff(frames[len(frames) // 2], bg), (0, 0), 1.5)
     mad = float(np.median(np.abs(probe.astype(np.float32) - np.median(probe))))
-    thr = max(16, int(np.median(probe) + 8 * 1.4826 * mad))
+    # The noise term is real but tiny (MAD ~1 on this footage), so the floor is
+    # what actually decides this, and it was set far too high. On a benchmark of
+    # low-contrast larvae with smears, pen writing and creeping condensation:
+    #
+    #   floor 16 (was)  38.8% recall, 0.0 fp/frame   real clip starts 80 s and 82 s
+    #   floor 12 (now)  56.2% recall, 2.9 fp/frame   real clip starts 48 s and 44 s
+    #   floor  8        81.7% recall, 1.1 fp/frame   but one real larva collapses
+    #   floor  5        54.6% recall, 12.7 fp/frame  blobs merge, larvae vanish INTO them
+    #
+    # Recall was the binding constraint, not false positives - the detector was
+    # missing animals, not inventing them, and the track filters absorb a few
+    # spurious blobs easily. 12 is where the benchmark and the real footage agree.
+    thr = max(12, int(np.median(probe) + 4 * 1.4826 * mad))
     log(f"background-difference threshold {thr} (noise MAD {mad:.1f})")
 
     dets = []
@@ -935,6 +948,8 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
                 pts.append((px, py, a, sharpness(g, px, py, max(6, math.sqrt(a)))))
         dets.append(pts)
     log(f"{sum(len(p) for p in dets) / max(len(dets), 1):.1f} detections per frame")
+    if detections_only:
+        return list(enumerate(dets)), None
 
     # Link detections into tracks. Four ideas borrowed from the established
     # trackers, all aimed at the same weakness - fragmentation:
@@ -1152,6 +1167,11 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
 
     return ({"dishes": {}, "larvae": larvae, "cfg": c,
              "frame": cv2.cvtColor(frames[-1], cv2.COLOR_GRAY2BGR)}, cir)
+
+def video_detections(video, dish_mm, hz=2.0):
+    """Just the per-frame detections, for measuring the detector on its own."""
+    return analyse_video(video, dish_mm, hz=hz, detections_only=True,
+                         log=lambda *a: None)[0]
 
 def write_overlay_video(video, St, cir, out, hz, size=760, log=print):
     """Replay the clip with each trail drawn as it is laid down.
@@ -1627,6 +1647,65 @@ def demo():
           f"tracked {wseen:.0f}/{WSEC}s")
     assert wseen > 0.8 * WSEC, f"lost a wall-follower for {WSEC - wseen:.0f}s of {WSEC}s"
     assert abs(werr) < 0.20, f"wall-following path off by {werr:+.1%}"
+
+    # DETECTOR SENSITIVITY. Two low-contrast larvae among static smears, pen
+    # writing and creeping condensation, with their positions known exactly. Recall
+    # is what limits this tool on real footage - the detector misses animals rather
+    # than inventing them - so it is worth a standing measurement, not a one-off.
+    BW = 480; BC = 240; BR = 220; BFPS = 10; BN = BFPS * 50; BCON = 18
+    btruth = []
+    bpath = os.path.join(_tf.mkdtemp(), "bench.mp4")
+    bw = cv2.VideoWriter(bpath, cv2.VideoWriter_fourcc(*"mp4v"), BFPS, (BW, BW))
+    for i in range(BN):
+        u = i / BN
+        base = 150 + int(10 * u)
+        f = np.full((BW, BW, 3), 70, np.uint8)
+        cv2.circle(f, (BC, BC), BR, (base,) * 3, -1)
+        cv2.circle(f, (BC, BC), BR, (210,) * 3, 3)
+        cv2.ellipse(f, (BC + 45, BC + 100), (int(45 + 60 * u), int(30 + 50 * u)),
+                    20, 0, 360, (base + 7,) * 3, -1)          # condensation creeping
+        for sx, sy, ang in ((BC + 80, BC - 110, 40), (BC - 100, BC + 65, 100)):
+            cv2.ellipse(f, (sx, sy), (14, 6), ang, 0, 360, (base + BCON + 4,) * 3, -1)
+        cv2.line(f, (BC - 150, BC + 130), (BC + 110, BC - 45), (128,) * 3, 5)
+        row = []
+        for L in range(2):
+            a = 2 * math.pi * (0.4 * i / BN) + L * 2.1
+            rr = (110 + 45 * L) * (1 - 0.25 * math.sin(2 * math.pi * i / BN))
+            bx, by = BC + rr * math.cos(a), BC + rr * math.sin(a)
+            cv2.ellipse(f, (int(bx), int(by)), (11, 5),
+                        int(math.degrees(a)) + 90, 0, 360, (base + BCON,) * 3, -1)
+            row.append((bx, by))
+        btruth.append(row)
+        bw.write(cv2.add(f, rng.integers(0, 6, f.shape, dtype=np.int16).astype(np.uint8)))
+    bw.release()
+    bdets = video_detections(bpath, 90.0, hz=2.0)
+    bcap = cv2.VideoCapture(bpath); _bok, _bf = bcap.read(); bcap.release()
+    bcx, bcy, brr = find_plate(cv2.cvtColor(_bf, cv2.COLOR_BGR2GRAY))
+    box_, boy_ = max(0, int(bcx - brr)), max(0, int(bcy - brr))
+    bstep = int(round(BFPS / 2.0))
+    bhit = btot = bfp = 0
+    for kk, pts in bdets:
+        ii = kk * bstep
+        if ii >= len(btruth):
+            break
+        used = set()
+        for tx, ty in btruth[ii]:
+            btot += 1
+            best, bd = None, 14.0
+            for j, (px, py, _a, _f) in enumerate(pts):
+                if j in used:
+                    continue
+                dd = math.hypot(px - (tx - box_), py - (ty - boy_))
+                if dd < bd:
+                    best, bd = j, dd
+            if best is not None:
+                used.add(best)
+                bhit += 1
+        bfp += len(pts) - len(used)
+    brecall = bhit / max(btot, 1)
+    print(f"detector: recall {brecall:.1%} at {BCON} grey levels of contrast, "
+          f"{bfp / max(len(bdets), 1):.1f} false blobs/frame")
+    assert brecall > 0.65, f"detector recall fell to {brecall:.1%}"
 
     # FALSE POSITIVES. The same dish with the yeast smears and the lighting drift
     # but NO animal must yield nothing - including when the count says to expect
