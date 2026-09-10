@@ -571,7 +571,8 @@ def save(stem, S):
         w.writerow(["dish", "larva", "name", "duration_s", "gap_s", "samples",
                     "mm_per_px", f"path_length_{unit}", f"mean_speed_{unit}_per_s",
                     f"spread_{unit}", "off_agar_s", f"est_5min_{unit}",
-                    f"gap_chords_{unit}", f"path_lower_bound_{unit}"])
+                    f"gap_chords_{unit}", f"path_lower_bound_{unit}",
+                    "backfilled_s"])
         for lid, L in S["larvae"].items():
             if len(L["pts"]) < 2:
                 continue
@@ -599,13 +600,15 @@ def save(stem, S):
             w.writerow([dn(L), lid, L["name"], f"{dur:.1f}", f"{gap:.1f}", len(L["pts"]),
                         c["mm_per_px"], f"{total:.2f}", f"{total / seen:.3f}",
                         f"{spread:.2f}", f"{L.get('off_s', 0.0):.1f}", f"{est5:.1f}",
-                        f"{bridged:.2f}", f"{total + bridged:.2f}"])
+                        f"{bridged:.2f}", f"{total + bridged:.2f}",
+                        f"{L.get('back_s', 0.0):.1f}"])
             rows.append({"name": L["name"], "dish": dn(L), "path": round(total, 2),
                          "est5": round(est5, 1), "bridged": round(bridged, 2),
                          "floor": round(total + bridged, 2),
                          "duration": round(dur, 1), "gap_s": round(gap, 1),
                          "spread": round(spread, 1), "samples": len(L["pts"]),
-                         "off_s": round(L.get("off_s", 0.0), 1)})
+                         "off_s": round(L.get("off_s", 0.0), 1),
+                         "back_s": round(L.get("back_s", 0.0), 1)})
     frame = S.get("frame")
     if frame is not None:
         im = frame.copy()
@@ -786,7 +789,7 @@ def serve(port, open_browser=True):
 
 # ---- offline path (tuning + self-check) --------------------------------------
 def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
-                  expect=None, bridge_s=15.0, edge_pct=99.0, log=print):
+                  expect=None, bridge_s=15.0, edge_pct=99.0, backfill=True, log=print):
     """Track every larva in a recorded clip, hands off.
 
     Decodes only the sampled frames (grab() skips the rest), cancels camera drift
@@ -901,6 +904,13 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
         sel = frames[lo_k:hi_k:max(1, (hi_k - lo_k) // 15)]
         bgs[k0] = np.median(np.stack(sel), axis=0).astype(np.uint8)
     bg_for = lambda k: bgs[min(keys, key=lambda a: abs(a - k))]
+    # A SECOND background over the whole clip. The rolling one tracks condensation
+    # as it creeps, but it also swallows a larva that barely moves for a minute -
+    # over a short window that animal IS its own background. The whole-clip median
+    # cannot hide it, because it has to be somewhere else eventually. Taking the
+    # larger difference of the two finds objects that either one would miss: on
+    # the test clip the first larva was picked up 80 s late without this.
+    bg_all = np.median(np.stack(frames[::max(1, len(frames) // 40)]), axis=0).astype(np.uint8)
     bg = bg_for(len(frames) // 2)
     ko, kc = kernels(c)
     lo, hi = c["min_area"], c["max_area"]
@@ -908,14 +918,17 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
     # Threshold on how far above the NOISE a pixel sits, not on a percentile: a
     # percentile always returns that fraction of pixels, so it invents detections
     # on a frame where nothing is there.
-    probe = cv2.GaussianBlur(cv2.absdiff(frames[len(frames) // 2], bg), (0, 0), 1.5)
+    mid = frames[len(frames) // 2]
+    probe = cv2.GaussianBlur(cv2.max(cv2.absdiff(mid, bg),
+                                     cv2.absdiff(mid, bg_all)), (0, 0), 1.5)
     mad = float(np.median(np.abs(probe.astype(np.float32) - np.median(probe))))
     thr = max(16, int(np.median(probe) + 8 * 1.4826 * mad))
     log(f"background-difference threshold {thr} (noise MAD {mad:.1f})")
 
     dets = []
     for fi, g in enumerate(frames):
-        d = cv2.GaussianBlur(cv2.absdiff(g, bg_for(fi)), (0, 0), 1.5)
+        d = cv2.GaussianBlur(cv2.max(cv2.absdiff(g, bg_for(fi)),
+                                     cv2.absdiff(g, bg_all)), (0, 0), 1.5)
         m = (d >= thr).astype(np.uint8)
         if ko is not None:
             m = cv2.morphologyEx(m, cv2.MORPH_OPEN, ko)
@@ -1137,13 +1150,70 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
             f"(from --dish-mm {dish_mm:g}); {seen_hint}. If that window looks wrong "
             f"for your animals, --dish-mm is probably wrong.")
 
+    # BACKFILL. Motion-based detection cannot see an animal that has not moved yet
+    # - over any window where it sits still it IS its own background - so a larva
+    # that loiters near the wall for the first minute is invisible and its track
+    # starts late. But once a track is confident we know exactly where that animal
+    # was when it started, so we can walk it BACKWARDS by appearance from there.
+    # Searching by appearance is hopeless unseeded (117 candidates in frame 0 of
+    # the test clip) and reliable once anchored to a known position.
+    back_gap = max(max_gap, int(round(20.0 * hz)))
+    for tr in (good if backfill else []):
+        k0 = tr["k"][0]
+        if k0 == 0:
+            continue
+        last = (tr["pts"][0][1], tr["pts"][0][2])
+        a0 = sorted(tr["areas"])[len(tr["areas"]) // 2]
+        miss, add = 0, []
+        for k in range(k0 - 1, -1, -1):
+            g = frames[k]
+            reach = min(hop * (1 + miss), 6 * hop)   # bounded: still cannot teleport
+            pad = int(reach) + 25
+            bx0, by0 = max(0, int(last[0] - pad)), max(0, int(last[1] - pad))
+            bx1 = min(g.shape[1], int(last[0] + pad))
+            by1 = min(g.shape[0], int(last[1] + pad))
+            found = None
+            if bx1 - bx0 > 30 and by1 - by0 > 30:
+                win = g[by0:by1, bx0:bx1]
+                for iv, th, bb in rank(win, c, near=(last[0] - bx0, last[1] - by0))[:6]:
+                    fx, fy = bb[1] + bx0, bb[2] + by0
+                    if (math.hypot(fx - last[0], fy - last[1]) <= reach
+                            and 0.4 * a0 <= bb[0] <= 2.5 * a0):
+                        found = (fx, fy, bb[0], bb[4])
+                        break
+            if found:
+                add.append((k, found))
+                last, miss = (found[0], found[1]), 0
+            else:
+                miss += 1
+                # Be patient going backwards: we are anchored to a known position,
+                # so an unbroken run of failures is far weaker evidence that this is
+                # the wrong animal than it would be searching blind.
+                if miss > back_gap:
+                    break
+        # `add` runs backwards in time, and each insert goes to the front, so
+        # iterating it directly leaves the track in ascending time order. Using
+        # reversed() here scrambled the recovered stretch - the path zig-zagged
+        # back through time and the reported start disagreed with the CSV.
+        tr["backfilled"] = len(add)
+        for k, (fx, fy, fa, ff) in add:
+            tr["pts"].insert(0, (k / hz, fx, fy))
+            tr["areas"].insert(0, fa)
+            tr["focus"].insert(0, ff)
+            tr["k"].insert(0, k)
+    log("backfilled starts: " + ", ".join(f"{tr['k'][0] / hz:.0f}s" for tr in good))
+    for tr in good:                                  # the track grew, so redo the flags
+        tr["offplane"] = mark_offplane(tr["areas"], tr["focus"])
+        tr["off_s"] = sum(tr["offplane"]) / hz
+
     larvae = {}
     for i, tr in enumerate(good, 1):
         larvae[str(i)] = {"name": f"larva {i}", "color": PALETTE[(i - 1) % len(PALETTE)],
                           "thresh": 0, "invert": 0, "pts": tr["pts"], "misses": 0,
                           "last": tr["last"], "area": tr["areas"][-1],
                           "area0": tr["areas"][0], "offplane": tr["offplane"],
-                          "off_s": tr["off_s"]}
+                          "off_s": tr["off_s"],
+                          "back_s": tr.get("backfilled", 0) / hz}
     off = [l for l in larvae.values() if l["off_s"] > 0]
     log(f"off the agar (bigger AND softer, sustained): "
         + (", ".join(f"{l['name']} {l['off_s']:.0f}s" for l in off) if off
@@ -1291,6 +1361,8 @@ def main():
     p.add_argument("--no-open", action="store_true", help="don't launch a browser")
     p.add_argument("--video", help="track a file instead of live, for tuning offline")
     p.add_argument("--out", default="run", help="output name prefix for --video")
+    p.add_argument("--no-backfill", action="store_true",
+                   help="do not walk tracks backwards to recover their start")
     p.add_argument("--overlay-video", action="store_true",
                    help="also write a replay with the trails drawn as they happen")
     p.add_argument("--bridge-s", type=float, default=15.0,
@@ -1311,7 +1383,8 @@ def main():
       try:
         St, cir = analyse_video(a.video, a.dish_mm, hz=a.sample_hz,
                                 stabilise=a.stabilise, expect=a.larvae,
-                                bridge_s=a.bridge_s, edge_pct=a.edge_pct)
+                                bridge_s=a.bridge_s, edge_pct=a.edge_pct,
+                                backfill=not a.no_backfill)
         r = save(os.path.splitext(a.video)[0], St)
         print()
         for row in sorted(r["larvae"], key=lambda x: -x["path"]):
@@ -1327,7 +1400,8 @@ def main():
                   f" +{row['bridged']:5.1f} across gaps = {row['floor']:6.1f} min"
                   f"  spread {row['spread']:5.1f})"
                   f"  tracked {seen:4.0f}/{row['duration']:.0f}s"
-                  + (f"  off-agar {row['off_s']:.0f}s" if row['off_s'] else "") + flag)
+                  + (f"  off-agar {row['off_s']:.0f}s" if row['off_s'] else "")
+                  + (f"  backfilled {row['back_s']:.0f}s" if row['back_s'] else "") + flag)
         print(f"\nwrote {r['stem']}_tracks.csv, _summary.csv, _overlay.png")
         if a.overlay_video:
             write_overlay_video(a.video, St, cir,
@@ -1651,6 +1725,14 @@ def demo():
         except TrackingError:
             pass
     print("empty dish: nothing invented, with or without an expected count")
+
+    # Every track must run forwards in time. Backfilling the start by walking
+    # backwards inserted the recovered stretch in reverse, so the path zig-zagged
+    # through time and every distance along it was wrong.
+    for L in TS["larvae"].values():
+        ts = [p[0] for p in L["pts"]]
+        assert ts == sorted(ts), f"{L['name']} is not in time order"
+    print("track order: every track runs forwards in time")
 
     # Cheap unit checks for the rules the video path depends on, so they are
     # covered without rebuilding a clip for each one.
