@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "api/track.py": { "memory": 2048, "maxDuration": 300 },
+    "api/upload.js": { "maxDuration": 60 }
+  }
+}
