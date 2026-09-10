@@ -54,7 +54,8 @@ code{font-family:var(--mono);font-size:.92em}
   <h1>Larval Path Length</h1>
   <p class="sub">Upload a top-down clip of a petri dish, say how wide the dish is, and get
   how far each larva crawled. Processing runs on the lab machine, so there is no size or
-  length limit — a five-minute clip takes about a minute.</p>
+  length limit — a five-minute clip takes about a minute, an eight-minute one a bit over two.
+  If everyone uploads at once you will be told your place in the queue.</p>
 
   <form id="f">
     <fieldset><legend>Your clip</legend>
@@ -107,6 +108,8 @@ const st = (m, bad) => { $('status').innerHTML = bad ? `<span class=bad>${m}</sp
 
 fetch('/video?probe=1', {method:'POST'})
   .then(r => { if (r.status === 401) $('pwwrap').hidden = false; }).catch(()=>{});
+// Uploads keep their place if the page is refreshed mid-job.
+const resume = new URLSearchParams(location.search).get('job');
 
 $('f').onsubmit = async e => {
   e.preventDefault();
@@ -117,10 +120,30 @@ $('f').onsubmit = async e => {
   try {
     const p = new URLSearchParams({dish_mm:$('dish').value, larvae:$('larvae').value||'0',
       who:($('who').value||'anon'), password:$('pw').value});
-    st(`Uploading ${(file.size/1e6).toFixed(0)} MB and tracking — a five-minute clip takes about a minute…`);
+    st(`Uploading ${(file.size/1e6).toFixed(0)} MB…`);
     const res = await fetch('/video?'+p, {method:'POST', body:file});
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || 'that did not work');
+    let job = await res.json();
+    if (!res.ok) throw new Error(job.error || 'that upload did not work');
+
+    // The clip is on the lab machine now; the work is queued. Poll rather than
+    // hold the connection open - an 8 minute clip takes a couple of minutes and
+    // the tunnel would time out long before that.
+    while (job.state === 'queued' || job.state === 'running') {
+      if (job.state === 'queued') {
+        st(job.position > 0
+          ? `In the queue — ${job.position} ${job.position === 1 ? 'clip' : 'clips'} ahead of yours.
+             All ${job.workers} slots are busy, so give it a minute.`
+          : 'Queued, starting shortly…');
+      } else {
+        st(`Tracking… ${job.stage || ''}`);
+      }
+      await new Promise(r => setTimeout(r, 1500));
+      const s2 = await fetch('/job?id=' + encodeURIComponent(job.id));
+      if (!s2.ok) throw new Error('lost track of that job');
+      job = await s2.json();
+    }
+    if (job.state === 'error') throw new Error(job.error || 'that did not work');
+    const d = job.result;
     $('rows').innerHTML = d.larvae.map(L => `<tr>
       <td>${L.name}</td><td>${L.observed} ${d.unit}</td><td>+${L.gapChords}</td>
       <td><b>${L.lowerBound} ${d.unit}</b></td><td>${L.speed} ${d.unit}/s</td>

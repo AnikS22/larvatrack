@@ -681,43 +681,95 @@ def save(stem, S):
     return {"stem": os.path.basename(stem), "unit": unit, "larvae": rows}
 
 # Uploads are processed on this machine, so the only real limits are politeness
-# ones. Two at a time keeps a classmate's upload from starving another's.
-JOBS = threading.Semaphore(2)
+# ones. A clip takes minutes, which is far too long to hold an HTTP connection
+# open through a tunnel, so /video returns a job id the moment the bytes have
+# landed and the work happens on a small pool of workers behind a queue.
 UPLOAD_DIR = os.path.join(HERE, "uploads")
 UPLOAD_PASSWORD = os.environ.get("LARVATRACK_PASSWORD", "")
+WORKERS = int(os.environ.get("LARVATRACK_WORKERS", "2"))
+MAX_DISH_PX = 1100               # bounds memory on 4K clips; well above what accuracy needs
 
-def handle_upload(body_reader, length, q, log=print):
-    """Stream an uploaded clip to disk, measure it, and return plain numbers."""
-    if length <= 0:
-        raise TrackingError("no video was sent")
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    who = "".join(ch for ch in (q.get("who") or "anon")[:24]
-                  if ch.isalnum() or ch in "-_") or "anon"
-    path = os.path.join(UPLOAD_DIR, f"{who}_{stamp}.mp4")
-    got = 0
-    with open(path, "wb") as f:                      # stream: never hold it in memory
-        while got < length:
-            chunk = body_reader.read(min(1 << 20, length - got))
-            if not chunk:
-                break
-            f.write(chunk)
-            got += len(chunk)
-    log(f"received {got / 1e6:.0f} MB from {who}")
+Q = __import__("queue").Queue()
+JOBS = {}                        # id -> state visible to whoever uploaded it
+JOBS_LOCK = threading.Lock()
 
+def _tune_threads():
+    """Give each worker its own slice of the cores.
+
+    OpenCV grabs every core by default, so two jobs at once fight over all 18 and
+    each runs far slower than it should - measured 172 s a pair against 35 s
+    alone, which is nearly 5x, not 2x."""
+    try:
+        n = max(1, (os.cpu_count() or 4) // max(1, WORKERS))
+        cv2.setNumThreads(n)
+        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+            os.environ.setdefault(var, str(n))
+        return n
+    except Exception:
+        return 0
+
+def _tune_threads():
+    """Give each worker its own slice of the cores.
+
+    OpenCV grabs every core by default, so two jobs at once fight over all of them
+    and each runs far slower than it should - measured 172 s for a pair against
+    35 s alone, nearly 5x rather than 2x."""
+    try:
+        n = max(1, (os.cpu_count() or 4) // max(1, WORKERS))
+        cv2.setNumThreads(n)
+        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+            os.environ.setdefault(var, str(n))
+        return n
+    except Exception:
+        return 0
+
+def _job_worker():
+    while True:
+        jid = Q.get()
+        with JOBS_LOCK:
+            job = JOBS.get(jid)
+        if not job:
+            Q.task_done()
+            continue
+        try:
+            with JOBS_LOCK:
+                job.update(state="running", stage="starting")
+            out = run_job(job, lambda m: job.update(stage=m))
+            with JOBS_LOCK:
+                job.update(state="done", stage="done", result=out)
+        except TrackingError as e:
+            with JOBS_LOCK:
+                job.update(state="error", error=str(e))
+        except Exception as e:
+            print("job failed:", repr(e), flush=True)
+            with JOBS_LOCK:
+                job.update(state="error", error="could not process that video")
+        finally:
+            Q.task_done()
+
+def queue_position(jid):
+    """How many jobs are ahead of this one, counting the ones being worked on."""
+    with JOBS_LOCK:
+        pend = [j for j in JOBS.values() if j["state"] == "queued"]
+        pend.sort(key=lambda j: j["seq"])
+        me = JOBS.get(jid)
+        if not me or me["state"] != "queued":
+            return 0
+        ahead = sum(1 for j in pend if j["seq"] < me["seq"])
+        running = sum(1 for j in JOBS.values() if j["state"] == "running")
+    return ahead + max(0, running - WORKERS + 1) + (1 if running >= WORKERS else 0)
+
+def run_job(job, log):
+    path, q = job["path"], job["q"]
     dish_mm = float(q.get("dish_mm") or 90.0)
     if not 20.0 <= dish_mm <= 200.0:
         raise TrackingError("dish diameter should be 20-200 mm")
     larvae = int(float(q.get("larvae") or 0))
     hz = float(q.get("hz") or 2.0)
-
-    with JOBS:                                       # bound the concurrency, not the size
-        S, cir = analyse_video(path, dish_mm, hz=hz, expect=larvae or None, log=log)
+    S, cir = analyse_video(path, dish_mm, hz=hz, expect=larvae or None,
+                           max_dish_px=MAX_DISH_PX, log=log)
     stem = os.path.splitext(path)[0]
     saved = save(stem, S)
-    if q.get("overlay_video"):
-        write_overlay_video(path, S, cir, stem + "_tracked.mp4", hz, log=log)
-
     unit = saved["unit"]
     rows = []
     for L in S["larvae"].values():
@@ -740,9 +792,48 @@ def handle_upload(body_reader, length, q, log=print):
     png = stem + "_overlay.png"
     return {"unit": unit, "dishRadiusPx": round(cir[2]),
             "mmPerPx": round(S["cfg"]["mm_per_px"], 5), "larvae": rows,
-            "files": os.path.basename(stem), "megabytes": round(got / 1e6),
+            "files": os.path.basename(stem), "megabytes": job["megabytes"],
             "overlay": ("data:image/png;base64," + base64.b64encode(
                 open(png, "rb").read()).decode()) if os.path.exists(png) else None}
+
+def accept_upload(body_reader, length, q, log=print):
+    """Stream the clip to disk while the connection is open, then queue the work."""
+    if length <= 0:
+        raise TrackingError("no video was sent")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    who = "".join(ch for ch in (q.get("who") or "anon")[:24]
+                  if ch.isalnum() or ch in "-_") or "anon"
+    path = os.path.join(UPLOAD_DIR, f"{who}_{time.strftime('%Y%m%d_%H%M%S')}.mp4")
+    got = 0
+    with open(path, "wb") as f:
+        while got < length:
+            chunk = body_reader.read(min(1 << 20, length - got))
+            if not chunk:
+                break
+            f.write(chunk)
+            got += len(chunk)
+    if got < length:
+        os.remove(path)
+        raise TrackingError("the upload was cut short - try again")
+    log(f"received {got / 1e6:.0f} MB from {who}")
+    with JOBS_LOCK:
+        jid = f"{len(JOBS) + 1}-{time.strftime('%H%M%S')}"
+        JOBS[jid] = {"id": jid, "seq": len(JOBS), "who": who, "path": path, "q": q,
+                     "state": "queued", "stage": "waiting for a free worker",
+                     "megabytes": round(got / 1e6), "result": None, "error": None}
+    Q.put(jid)
+    return jid
+
+def job_status(jid):
+    with JOBS_LOCK:
+        job = JOBS.get(jid)
+        if not job:
+            return None
+        out = {k: job[k] for k in ("id", "state", "stage", "who", "megabytes",
+                                   "error", "result")}
+    out["position"] = queue_position(jid)
+    out["workers"] = WORKERS
+    return out
 
 def dish_crop(frame, q):
     """The page sends the dish's bounding box; blank the corners outside the rim."""
@@ -767,6 +858,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         route = urlparse(self.path).path
+        if route == "/job":
+            jid = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}.get("id", "")
+            st = job_status(jid)
+            return self._send(200 if st else 404,
+                              json.dumps(st or {"error": "no such job"}),
+                              "application/json")
         page = {"/": "index.html", "/upload": "upload.html"}.get(route)
         if not page:
             return self._send(404, b"not found", "text/plain")
@@ -793,9 +890,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401, json.dumps({"error": "wrong password"}))
             try:
                 n = int(self.headers.get("Content-Length") or 0)
-                out = handle_upload(self.rfile, n, q,
+                jid = accept_upload(self.rfile, n, q,
                                     log=lambda m: print(f"  [upload] {m}", flush=True))
-                return self._send(200, json.dumps(out))
+                return self._send(202, json.dumps(job_status(jid)))
             except TrackingError as e:
                 return self._send(422, json.dumps({"error": str(e)}))
             except Exception as e:
@@ -913,13 +1010,18 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send(404, json.dumps({"error": "no such route"}))
 
-def serve(port, open_browser=True):
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+def serve(port, open_browser=True, host="127.0.0.1"):
+    per = _tune_threads()
+    per = _tune_threads()
+    for _ in range(WORKERS):
+        threading.Thread(target=_job_worker, daemon=True).start()
+    srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://localhost:{port}"
     print(f"larvatrack on {url}   (ctrl-C to stop)")
     print(f"  live tracking   {url}/")
     print(f"  video uploads   {url}/upload"
           + ("   [password set]" if UPLOAD_PASSWORD else "   [no password]"))
+    print(f"  {WORKERS} worker(s) x {per} threads each; clips queue when all are busy")
     print("the browser will ask for camera permission - allow it, then pick your iPhone")
     if open_browser:
         threading.Timer(0.5, webbrowser.open, [url]).start()
@@ -1924,9 +2026,12 @@ def demo():
         _C = _rng.random((int(_rng.integers(1, 6)), int(_rng.integers(1, 6)))) * 10
         _C[_rng.random(_C.shape) < 0.35] = 1e9        # infeasible pairs, as in tracking
         _r, _c = linear_sum_assignment(_C)
-        _best = min(sum(_C[i, pm[i]] for i in range(_C.shape[0]))
+        # Brute force needs the short side to pick from, so compare on whichever
+        # orientation has at least as many columns as rows.
+        _B = _C if _C.shape[0] <= _C.shape[1] else _C.T
+        _best = min(sum(_B[i, pm[i]] for i in range(_B.shape[0]))
                     for pm in __import__("itertools").permutations(
-                        range(_C.shape[1]), _C.shape[0]))
+                        range(_B.shape[1]), _B.shape[0]))
         assert abs(_C[_r, _c].sum() - _best) < 1e-9, "assignment is not optimal"
 
     lin = [(t, x * 100, 0.0) for t, x, _ in ((0.0, 0, 0), (0.5, 1, 0), (1.0, 2, 0))]
