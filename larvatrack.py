@@ -12,7 +12,6 @@ Nothing is recorded - only the final CSVs and an overlay PNG are saved.
 import argparse, csv, io, json, math, os, sys, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from scipy.optimize import linear_sum_assignment
 import cv2, numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +19,65 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # A larva is a stubby oval: a few times longer than wide, never a streak. Shadow
 # bands and dish-rim arcs are 20:1 and up, dust and bubbles are round - both out.
 LARVA_ELONG = (1.3, 6.0)
+
+def linear_sum_assignment(cost):
+    """Minimum-cost one-to-one assignment: the Jonker-Volgenant shortest-path
+    method, same answer as scipy's function of this name.
+
+    Written out rather than imported because scipy is 97 MB and this is the only
+    thing it was used for - which put the deployment bundle over its 250 MB limit
+    on its own. The matrices here are a handful of tracks by a handful of blobs,
+    so an O(n^3) method is far more than fast enough."""
+    C = np.asarray(cost, dtype=float)
+    n, m = C.shape
+    transposed = n > m
+    if transposed:
+        C = C.T
+        n, m = m, n
+    u = np.zeros(n + 1)
+    v = np.zeros(m + 1)
+    p = np.zeros(m + 1, dtype=int)                   # column -> row
+    way = np.zeros(m + 1, dtype=int)
+    for i in range(1, n + 1):
+        p[0] = i
+        j0 = 0
+        minv = np.full(m + 1, np.inf)
+        used = np.zeros(m + 1, dtype=bool)
+        while True:
+            used[j0] = True
+            i0, delta, j1 = p[j0], np.inf, -1
+            for j in range(1, m + 1):
+                if used[j]:
+                    continue
+                cur = C[i0 - 1, j - 1] - u[i0] - v[j]
+                if cur < minv[j]:
+                    minv[j], way[j] = cur, j0
+                if minv[j] < delta:
+                    delta, j1 = minv[j], j
+            for j in range(m + 1):
+                if used[j]:
+                    u[p[j]] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if p[j0] == 0:
+                break
+        while True:                                  # walk the augmenting path back
+            j1 = way[j0]
+            p[j0] = p[j1]
+            j0 = j1
+            if j0 == 0:
+                break
+    rows, cols = [], []
+    for j in range(1, m + 1):
+        if p[j]:
+            rows.append(p[j] - 1)
+            cols.append(j - 1)
+    rows, cols = np.array(rows), np.array(cols)
+    order = np.argsort(cols if transposed else rows)
+    rows, cols = rows[order], cols[order]
+    return (cols, rows) if transposed else (rows, cols)
 
 class TrackingError(Exception):
     """Something about this clip or these settings makes tracking impossible."""
@@ -787,7 +845,7 @@ def serve(port, open_browser=True):
 # ---- offline path (tuning + self-check) --------------------------------------
 def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
                   expect=None, bridge_s=15.0, edge_pct=99.0,
-                  detections_only=False, log=print):
+                  detections_only=False, max_dish_px=0, log=print):
     """Track every larva in a recorded clip, hands off.
 
     Decodes only the sampled frames (grab() skips the rest), cancels camera drift
@@ -810,6 +868,15 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
     x0, y0, side = int(cx - r), int(cy - r), int(2 * r)
     sub = lambda f: f[max(0, y0):y0 + side, max(0, x0):x0 + side]
     g0f = cv2.cvtColor(sub(f0), cv2.COLOR_BGR2GRAY)
+    # Cap the working resolution. Every sampled frame is held in memory, so a
+    # 4.5 minute clip of a 1026 px dish peaks near 1.9 GB - more than a serverless
+    # function should be asked for. Tracking needs the dish to be roughly 550 px
+    # across or more (below that a larva merges with the rim), so anything above
+    # that is memory spent for nothing.
+    shrink_to = min(1.0, max_dish_px / (2.0 * r)) if max_dish_px else 1.0
+    if shrink_to < 1.0:
+        r = r * shrink_to
+        cx, cy = cx * shrink_to, cy * shrink_to
     mpp = dish_mm / (2 * r)
     lo, hi = area_bounds(mpp)
     # Keep nearly the whole dish. The live tracker blanks the outer 10% because it
@@ -843,6 +910,9 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
         g = cv2.cvtColor(sub(f), cv2.COLOR_BGR2GRAY)
         if g.shape != g0f.shape:
             continue
+        if shrink_to < 1.0:
+            g = cv2.resize(g, (int(g.shape[1] * shrink_to), int(g.shape[0] * shrink_to)),
+                           interpolation=cv2.INTER_AREA)
         raw.append(g)
         centres.append(track_plate(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), cx, cy, r, scale=2))
     cap.release()
@@ -879,12 +949,16 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
             "if the camera was actually bumped)")
         drift = [(0.0, 0.0)] * len(raw)
 
-    frames = []
-    for g, d in zip(raw, drift):
+    # Mask in place. Keeping the raw crops and the masked copies at the same time
+    # doubled peak memory - 1.7 GB on a 4.5 minute clip, which is more than a
+    # serverless function should ever be asked for.
+    for i_ in range(len(raw)):
+        g, d = raw[i_], drift[i_]
         if math.hypot(*d) > 1.0:                     # sub-pixel drift is not worth warping
             g = cv2.warpAffine(g, np.float32([[1, 0, -d[0]], [0, 1, -d[1]]]),
                                (g.shape[1], g.shape[0]), borderMode=cv2.BORDER_REPLICATE)
-        frames.append(mask_dish(g, r, r, r, shrink=c["edge_pct"] / 100.0))
+        raw[i_] = mask_dish(g, r, r, r, shrink=c["edge_pct"] / 100.0)
+    frames = raw
 
     # Everything that never moves - the pen writing, the rim, the bench, slow
     # condensation - is the per-pixel median over the clip. Subtract it and only
@@ -1311,6 +1385,9 @@ def main():
     p.add_argument("--no-open", action="store_true", help="don't launch a browser")
     p.add_argument("--video", help="track a file instead of live, for tuning offline")
     p.add_argument("--out", default="run", help="output name prefix for --video")
+    p.add_argument("--max-dish-px", type=int, default=0,
+                   help="downscale so the dish is at most N px across (0 = native); "
+                        "caps memory, needs ~550+ to stay accurate")
     p.add_argument("--overlay-video", action="store_true",
                    help="also write a replay with the trails drawn as they happen")
     p.add_argument("--bridge-s", type=float, default=15.0,
@@ -1331,7 +1408,8 @@ def main():
       try:
         St, cir = analyse_video(a.video, a.dish_mm, hz=a.sample_hz,
                                 stabilise=a.stabilise, expect=a.larvae,
-                                bridge_s=a.bridge_s, edge_pct=a.edge_pct)
+                                bridge_s=a.bridge_s, edge_pct=a.edge_pct,
+                                max_dish_px=a.max_dish_px)
         r = save(os.path.splitext(a.video)[0], St)
         print()
         for row in sorted(r["larvae"], key=lambda x: -x["path"]):
@@ -1753,6 +1831,17 @@ def demo():
     assert abs(gg - 8.5) < 1e-6, f"gap time {gg}"
     assert abs(gb - 30.0) < 1.0, f"chord across the gap measured {gb}, expected 30 mm"
     assert gt < 30.0, f"the unobserved chord leaked into the observed path: {gt}"
+
+    # The assignment solver replaced scipy's; it has to agree with it exactly.
+    _rng = np.random.default_rng(0)
+    for _ in range(60):
+        _C = _rng.random((int(_rng.integers(1, 6)), int(_rng.integers(1, 6)))) * 10
+        _C[_rng.random(_C.shape) < 0.35] = 1e9        # infeasible pairs, as in tracking
+        _r, _c = linear_sum_assignment(_C)
+        _best = min(sum(_C[i, pm[i]] for i in range(_C.shape[0]))
+                    for pm in __import__("itertools").permutations(
+                        range(_C.shape[1]), _C.shape[0]))
+        assert abs(_C[_r, _c].sum() - _best) < 1e-9, "assignment is not optimal"
 
     lin = [(t, x * 100, 0.0) for t, x, _ in ((0.0, 0, 0), (0.5, 1, 0), (1.0, 2, 0))]
     p1 = path_length(lin, dict(D, mm_per_px=0.1, sample_hz=2.0))[0]
