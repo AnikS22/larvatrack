@@ -1174,9 +1174,24 @@ def write_overlay_video(video, St, cir, out, hz, size=760, log=print):
     ch, cw = probe[max(0, y0):y0 + side, max(0, x0):x0 + side].shape[:2]
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     sx, sy = size / float(cw), size / float(ch)
-    vw = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"mp4v"), fps, (size, size))
-    if not vw.isOpened():
-        raise TrackingError(f"cannot write {out!r}")
+    # Encode H.264 through ffmpeg when it is available. OpenCV's mp4v writes
+    # MPEG-4 Part 2, which is structurally valid - ffprobe reports no errors and
+    # every frame decodes - but QuickTime renders it badly, which reads as a
+    # corrupted file. H.264 plays everywhere and is a third of the size.
+    import shutil, subprocess
+    ff = shutil.which("ffmpeg")
+    proc = vw = None
+    if ff:
+        proc = subprocess.Popen(
+            [ff, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+             "-s", f"{size}x{size}", "-r", f"{fps:.6f}", "-i", "-",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+             "-pix_fmt", "yuv420p", "-movflags", "+faststart", out],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    else:
+        vw = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"mp4v"), fps, (size, size))
+        if not vw.isOpened():
+            raise TrackingError(f"cannot write {out!r}")
 
     lar = []
     for L in St["larvae"].values():
@@ -1251,11 +1266,23 @@ def write_overlay_video(video, St, cir, out, hz, size=760, log=print):
             y_hud += 24
         cv2.putText(im, f"{t:5.1f}s", (size - 92, 26), cv2.FONT_HERSHEY_SIMPLEX,
                     .6, (240, 240, 240), 2, cv2.LINE_AA)
-        vw.write(im)
+        if proc:
+            proc.stdin.write(im.tobytes())
+        else:
+            vw.write(im)
         n += 1
     cap.release()
-    vw.release()
-    log(f"wrote {out} ({n} frames, {n / fps:.0f}s)")
+    if proc:
+        proc.stdin.close()
+        err = proc.stderr.read().decode()[-400:]
+        if proc.wait() != 0:
+            raise TrackingError(f"ffmpeg failed: {err}")
+        codec = "H.264"
+    else:
+        vw.release()
+        codec = "MPEG-4 part 2 (install ffmpeg for H.264)"
+    log(f"wrote {out} ({n} frames, {n / fps:.0f}s, {codec}, "
+        f"{os.path.getsize(out) / 1e6:.0f} MB)")
     return out
 
 def main():
