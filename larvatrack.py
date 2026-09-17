@@ -734,7 +734,8 @@ def _job_worker():
         try:
             with JOBS_LOCK:
                 job.update(state="running", stage="starting")
-            out = run_job(job, lambda m: job.update(stage=m))
+            runner = run_pick_job if job.get("kind") == "pick" else run_job
+            out = runner(job, lambda m: job.update(stage=str(m)))
             with JOBS_LOCK:
                 job.update(state="done", stage="done", result=out)
         except TrackingError as e:
@@ -895,6 +896,104 @@ def remux(path, log=print):
     os.remove(path)
     return out
 
+# Videos already live on this machine, so the page lists them and asks for a
+# frame by path - no upload of a file that is six inches away.
+VIDEO_DIRS = [os.path.join(HERE, "recordings"), os.path.join(HERE, "uploads"),
+              os.path.expanduser("~/Downloads"), os.path.expanduser("~/Desktop")]
+VIDEO_EXT = (".mp4", ".mov", ".webm", ".m4v", ".avi")
+
+def list_videos(limit=80):
+    out = []
+    for d in VIDEO_DIRS:
+        if not os.path.isdir(d):
+            continue
+        try:
+            for name in os.listdir(d):
+                if not name.lower().endswith(VIDEO_EXT) or name.startswith("."):
+                    continue
+                p = os.path.join(d, name)
+                try:
+                    stt = os.stat(p)
+                except OSError:
+                    continue
+                out.append({"path": p, "name": name, "dir": os.path.basename(d) or d,
+                            "megabytes": round(stt.st_size / 1e6),
+                            "modified": stt.st_mtime})
+        except OSError:
+            continue
+    out.sort(key=lambda v: -v["modified"])
+    for v in out:
+        v.pop("modified", None)
+    return out[:limit]
+
+def safe_video(path):
+    """Only files under the directories we advertise, and only videos."""
+    p = os.path.realpath(path)
+    if not p.lower().endswith(VIDEO_EXT) or not os.path.isfile(p):
+        raise TrackingError("not a video file")
+    if not any(p.startswith(os.path.realpath(d) + os.sep) for d in VIDEO_DIRS):
+        raise TrackingError("that file is outside the folders this tool looks in")
+    return p
+
+def video_meta(path):
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise TrackingError("cannot open that video")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    ok, f0 = cap.read()
+    cap.release()
+    dish = find_plate(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY)) if ok else None
+    return {"fps": round(fps, 3), "seconds": round(n / max(fps, 1e-6), 1),
+            "width": w, "height": h,
+            "dish": None if not dish else {"cx": round(dish[0]), "cy": round(dish[1]),
+                                           "r": round(dish[2])}}
+
+def frame_jpeg(path, t, width=1100):
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise TrackingError("cannot open that video")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(t * fps)))
+    ok, f = cap.read()
+    cap.release()
+    if not ok:
+        raise TrackingError("no frame at that time")
+    if f.shape[1] > width:
+        f = cv2.resize(f, (width, int(f.shape[0] * width / f.shape[1])))
+    return cv2.imencode(".jpg", f, [int(cv2.IMWRITE_JPEG_QUALITY), 88])[1].tobytes()
+
+def run_pick_job(job, log):
+    q = job["q"]
+    S, cir = track_seeded(job["path"], float(q["dish_mm"]), job["boxes"],
+                          hz=float(q.get("hz") or 2.0), at=float(q.get("at") or 0.0),
+                          log=log)
+    stem = os.path.splitext(job["path"])[0] + "_picked"
+    saved = save(stem, S)
+    unit = saved["unit"]
+    rows = []
+    for L in S["larvae"].values():
+        c = larva_cfg(S, L)
+        total, _cum, gap, bridged = path_length(L["pts"], c, L.get("offplane"))
+        dur = L["pts"][-1][0] - L["pts"][0][0]
+        seen = max(dur - gap, 1e-9)
+        rows.append({"name": L["name"], "color": L["color"],
+                     "observed": round(total, 1), "gapChords": round(bridged, 1),
+                     "lowerBound": round(total + bridged, 1),
+                     "speed": round(total / seen, 2),
+                     "trackedSeconds": round(seen), "spanSeconds": round(dur),
+                     "offAgarSeconds": round(L.get("off_s", 0.0)),
+                     "samples": len(L["pts"])})
+    rows.sort(key=lambda r: -r["observed"])
+    png = stem + "_overlay.png"
+    return {"unit": unit, "mmPerPx": round(S["cfg"]["mm_per_px"], 5),
+            "dishRadiusPx": round(cir[2]), "larvae": rows,
+            "files": os.path.basename(stem),
+            "overlay": ("data:image/png;base64," + base64.b64encode(
+                open(png, "rb").read()).decode()) if os.path.exists(png) else None}
+
 def dish_crop(frame, q):
     """The page sends the dish's bounding box; blank the corners outside the rim."""
     r = float(q.get("dish_r") or 0)
@@ -918,13 +1017,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         route = urlparse(self.path).path
+        if route == "/videos":
+            return self._send(200, json.dumps({"videos": list_videos()}),
+                              "application/json")
+        if route in ("/meta", "/frame_img"):
+            q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            try:
+                p = safe_video(q.get("path") or "")
+                if route == "/meta":
+                    return self._send(200, json.dumps(video_meta(p)), "application/json")
+                return self._send(200, frame_jpeg(p, float(q.get("t") or 0)), "image/jpeg")
+            except TrackingError as e:
+                return self._send(422, json.dumps({"error": str(e)}), "application/json")
         if route == "/job":
             jid = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}.get("id", "")
             st = job_status(jid)
             return self._send(200 if st else 404,
                               json.dumps(st or {"error": "no such job"}),
                               "application/json")
-        page = {"/": "record.html", "/track": "index.html",
+        page = {"/": "pick.html", "/record": "record.html", "/track": "index.html",
                 "/upload": "upload.html"}.get(route)
         if not page:
             return self._send(404, b"not found", "text/plain")
@@ -943,6 +1054,34 @@ class Handler(BaseHTTPRequestHandler):
             cv2.imdecode(np.frombuffer(body, np.uint8), cv2.IMREAD_COLOR) if body else None)
         if frame is not None and route in ("/frame", "/plate", "/add"):
             frame = dish_crop(frame, q)
+
+        if route == "/pick":
+            try:
+                req = json.loads(body or b"{}")
+                path = safe_video(req.get("path") or "")
+                boxes = [(float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+                         for b in (req.get("boxes") or [])]
+                if not boxes:
+                    return self._send(400, json.dumps({"error": "draw a box first"}))
+                dish_mm = float(req.get("dishMm") or 0)
+                if not 20.0 <= dish_mm <= 200.0:
+                    return self._send(400, json.dumps({"error": "dish must be 20-200 mm"}))
+                with JOBS_LOCK:
+                    jid = f"p{len(JOBS) + 1}-{time.strftime('%H%M%S')}"
+                    JOBS[jid] = {"id": jid, "seq": len(JOBS), "kind": "pick",
+                                 "who": os.path.basename(path), "path": path,
+                                 "boxes": boxes, "megabytes": 0,
+                                 "q": {"dish_mm": dish_mm, "at": req.get("at") or 0,
+                                       "hz": req.get("hz") or 2.0},
+                                 "state": "queued", "stage": "waiting for a worker",
+                                 "result": None, "error": None}
+                Q.put(jid)
+                return self._send(202, json.dumps(job_status(jid)))
+            except TrackingError as e:
+                return self._send(422, json.dumps({"error": str(e)}))
+            except Exception as e:
+                print("pick failed:", repr(e), flush=True)
+                return self._send(500, json.dumps({"error": "could not start that job"}))
 
         if route == "/record":
             try:
@@ -1067,6 +1206,34 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({
                 "unit": "mm" if S["cfg"]["mm_per_px"] != 1.0 else "px", "larvae": res}))
 
+        if route == "/pick":
+            try:
+                req = json.loads(body or b"{}")
+                path = safe_video(req.get("path") or "")
+                boxes = [(float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+                         for b in (req.get("boxes") or [])]
+                if not boxes:
+                    return self._send(400, json.dumps({"error": "draw a box first"}))
+                dish_mm = float(req.get("dishMm") or 0)
+                if not 20.0 <= dish_mm <= 200.0:
+                    return self._send(400, json.dumps({"error": "dish must be 20-200 mm"}))
+                with JOBS_LOCK:
+                    jid = f"p{len(JOBS) + 1}-{time.strftime('%H%M%S')}"
+                    JOBS[jid] = {"id": jid, "seq": len(JOBS), "kind": "pick",
+                                 "who": os.path.basename(path), "path": path,
+                                 "boxes": boxes, "megabytes": 0,
+                                 "q": {"dish_mm": dish_mm, "at": req.get("at") or 0,
+                                       "hz": req.get("hz") or 2.0},
+                                 "state": "queued", "stage": "waiting for a worker",
+                                 "result": None, "error": None}
+                Q.put(jid)
+                return self._send(202, json.dumps(job_status(jid)))
+            except TrackingError as e:
+                return self._send(422, json.dumps({"error": str(e)}))
+            except Exception as e:
+                print("pick failed:", repr(e), flush=True)
+                return self._send(500, json.dumps({"error": "could not start that job"}))
+
         if route == "/record":
             try:
                 n = int(self.headers.get("Content-Length") or 0)
@@ -1105,7 +1272,8 @@ def serve(port, open_browser=True, host="127.0.0.1"):
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://localhost:{port}"
     print(f"larvatrack on {url}   (ctrl-C to stop)")
-    print(f"  record          {url}/")
+    print(f"  measure a clip  {url}/")
+    print(f"  record          {url}/record")
     print(f"  live tracking   {url}/track")
     print(f"  video uploads   {url}/upload"
           + ("   [password set]" if UPLOAD_PASSWORD else "   [no password]"))
