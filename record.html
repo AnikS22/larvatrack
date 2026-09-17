@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dish Recorder</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{--ground:#EFF3F0;--surface:#fff;--ink:#141F1A;--muted:#59685F;--line:#D8E0DA;
+  --accent:#0F6B54;--rec:#C0392B;--display:"Fraunces",Georgia,serif;
+  --body:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace}
+@media (prefers-color-scheme:dark){:root{--ground:#0D1311;--surface:#141C18;--ink:#E3ECE6;
+  --muted:#8B9A92;--line:#25302A;--accent:#46CBA4;--rec:#E4614F}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.5}
+.wrap{max-width:1080px;margin:0 auto;padding:32px 20px 70px;display:grid;
+  grid-template-columns:minmax(0,1fr) 320px;gap:26px;align-items:start}
+@media(max-width:880px){.wrap{grid-template-columns:1fr}}
+header{grid-column:1/-1;border-bottom:1.5px solid var(--ink);padding-bottom:16px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 8px}
+h1{font-family:var(--display);font-size:clamp(28px,5vw,40px);margin:0;letter-spacing:-.015em}
+.sub{color:var(--muted);margin:10px 0 0;max-width:62ch}
+video{width:100%;display:block;background:#000;border-radius:8px;border:1px solid var(--line)}
+.stage{position:relative}
+.dot{position:absolute;top:12px;left:12px;display:flex;align-items:center;gap:8px;
+  background:rgba(0,0,0,.62);padding:6px 12px;border-radius:20px;color:#fff;
+  font-family:var(--mono);font-size:13px}
+.dot i{width:10px;height:10px;border-radius:50%;background:var(--rec);animation:p 1.4s infinite}
+@keyframes p{50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.dot i{animation:none}}
+fieldset{border:1px solid var(--line);border-radius:8px;padding:16px;margin:0 0 14px;background:var(--surface)}
+legend{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);padding:0 6px}
+label{display:block;margin:0 0 12px}
+label span{display:block;font-size:13px;color:var(--muted);margin-bottom:5px}
+select,input[type=text]{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;
+  background:var(--ground);color:var(--ink);font-family:var(--mono);font-size:14px}
+button{width:100%;padding:14px;border:none;border-radius:8px;font-family:var(--body);
+  font-weight:600;font-size:16px;cursor:pointer;background:var(--rec);color:#fff}
+button.stop{background:var(--ink);color:var(--ground)}
+button:disabled{opacity:.45;cursor:default}
+button.ghost{background:transparent;color:var(--muted);border:1px solid var(--line);
+  font-size:14px;padding:9px;font-weight:500;margin-top:8px}
+#status{font-family:var(--mono);font-size:13px;color:var(--muted);margin:12px 0 0;min-height:1.4em}
+.bad{color:var(--rec)}.good{color:var(--accent)}
+.big{font-family:var(--mono);font-size:30px;font-variant-numeric:tabular-nums;margin:4px 0 0}
+.hint{font-size:12.5px;color:var(--muted);margin:8px 0 0}
+ul{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}li{margin:4px 0}
+</style></head><body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Drosophila larval foraging</p>
+    <h1>Dish Recorder</h1>
+    <p class="sub">Records your iPhone straight to this Mac. Nothing is saved on the phone and
+    nothing is analysed here — measure the clips afterwards with
+    <code>larvatrack.py --video</code>.</p>
+  </header>
+
+  <div class="stage">
+    <video id="v" playsinline muted autoplay></video>
+    <div class="dot" id="dot" hidden><i></i><span id="clock">0:00</span></div>
+  </div>
+
+  <div>
+    <fieldset><legend>Camera</legend>
+      <select id="cams"></select>
+      <p class="hint">iPhone missing? Unlock it, same Apple ID, Wi-Fi and Bluetooth on.</p>
+      <button class="ghost" id="rescan" type="button">Rescan cameras</button>
+    </fieldset>
+
+    <fieldset><legend>Recording</legend>
+      <label><span>Name for the file</span>
+        <input type="text" id="who" placeholder="e.g. rover-plate-3" maxlength="24"></label>
+      <button id="go" type="button">Start recording</button>
+      <div class="big" id="size">—</div>
+      <p id="status">Pick your camera to begin.</p>
+    </fieldset>
+
+    <fieldset><legend>Before you start</legend>
+      <ul>
+        <li>Phone locked in the stand, whole dish in frame.</li>
+        <li>No zoom or reframing once recording — camera motion reads as larval movement.</li>
+        <li>Turn off auto-rotate, and keep the Mac awake.</li>
+      </ul>
+    </fieldset>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const st = (m, cls) => { $('status').innerHTML = cls ? `<span class="${cls}">${m}</span>` : m; };
+let stream = null, rec = null, id = null, sent = 0, t0 = 0, tick = null;
+
+async function listCams(){
+  try { (await navigator.mediaDevices.getUserMedia({video:true})).getTracks().forEach(t=>t.stop()); }
+  catch(e){ return st('Camera permission denied. System Settings → Privacy & Security → Camera.', 'bad'); }
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+  $('cams').innerHTML = devs.map((d,i)=>`<option value="${d.deviceId}">${d.label||('camera '+(i+1))}</option>`).join('');
+  const iphone = devs.findIndex(d=>/iphone|continuity/i.test(d.label));
+  if (iphone >= 0) $('cams').selectedIndex = iphone;
+  await open();
+}
+async function open(){
+  if (stream) stream.getTracks().forEach(t=>t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({
+    video:{deviceId:{exact:$('cams').value}, width:{ideal:1920}, height:{ideal:1080},
+           frameRate:{ideal:30}}});
+  $('v').srcObject = stream; await $('v').play();
+  const s = stream.getVideoTracks()[0].getSettings();
+  st(`Ready — ${s.width}×${s.height} at ${Math.round(s.frameRate||30)} fps.`);
+}
+$('cams').onchange = open;
+$('rescan').onclick = listCams;
+
+function fmt(s){ return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`; }
+
+$('go').onclick = async () => {
+  if (rec) return stop();
+  if (!stream) return st('Pick a camera first.', 'bad');
+  // Chunks go to the Mac as they are produced, so neither the phone nor this
+  // page ever holds the whole clip.
+  const mime = ['video/mp4','video/webm;codecs=vp9','video/webm']
+    .find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
+  if (!mime) return st('This browser cannot record video.', 'bad');
+  id = 'r' + Date.now().toString(36);
+  sent = 0; t0 = Date.now();
+  const q = new URLSearchParams({id, mime, who: $('who').value || 'clip'});
+  rec = new MediaRecorder(stream, {mimeType: mime, videoBitsPerSecond: 8_000_000});
+  rec.ondataavailable = async e => {
+    if (!e.data.size) return;
+    try {
+      const r = await fetch('/record?'+q, {method:'POST', body:e.data});
+      const d = await r.json();
+      if (d.bytes) { sent = d.bytes; $('size').textContent = (sent/1e6).toFixed(0)+' MB'; }
+    } catch (err) { st('Lost the connection to this Mac — recording anyway.', 'bad'); }
+  };
+  rec.start(2000);                        // hand over two seconds at a time
+  $('go').textContent = 'Stop recording'; $('go').classList.add('stop');
+  $('dot').hidden = false;
+  tick = setInterval(() => $('clock').textContent = fmt((Date.now()-t0)/1000), 250);
+  st('Recording to this Mac. Do not move the camera.', 'good');
+};
+
+async function stop(){
+  const done = new Promise(r => rec.onstop = r);
+  rec.stop(); await done; rec = null;
+  clearInterval(tick); $('dot').hidden = true;
+  $('go').textContent = 'Start recording'; $('go').classList.remove('stop');
+  st('Finishing the file…');
+  const q = new URLSearchParams({id, done:'1'});
+  try {
+    const d = await (await fetch('/record?'+q, {method:'POST'})).json();
+    if (d.error) throw new Error(d.error);
+    st(`Saved <b>${d.file}</b> (${d.megabytes} MB) in recordings/`, 'good');
+    $('size').textContent = d.megabytes + ' MB';
+  } catch (err) { st('Could not finish the file: ' + err.message, 'bad'); }
+}
+listCams();
+</script></body></html>

@@ -835,6 +835,66 @@ def job_status(jid):
     out["workers"] = WORKERS
     return out
 
+RECORD_DIR = os.path.join(HERE, "recordings")
+RECORDING = {}                   # id -> open file handle
+REC_LOCK = threading.Lock()
+
+def record_chunk(body, q, log=print):
+    """Append one slice of a live recording straight to disk.
+
+    The phone has no room and the browser should not hold half a gigabyte in
+    memory, so MediaRecorder hands over a couple of seconds at a time and each
+    piece lands on this machine as it arrives. Nothing is ever buffered whole."""
+    rid = "".join(ch for ch in (q.get("id") or "") if ch.isalnum() or ch in "-_")
+    if not rid:
+        raise TrackingError("missing recording id")
+    os.makedirs(RECORD_DIR, exist_ok=True)
+    if q.get("done"):
+        with REC_LOCK:
+            f = RECORDING.pop(rid, None)
+        if not f:
+            raise TrackingError("no recording in progress")
+        path = f.name
+        f.close()
+        final = remux(path, log)
+        size = os.path.getsize(final)
+        log(f"saved {os.path.basename(final)} ({size / 1e6:.0f} MB)")
+        return {"done": True, "file": os.path.basename(final),
+                "megabytes": round(size / 1e6), "path": final}
+    with REC_LOCK:
+        f = RECORDING.get(rid)
+        if f is None:
+            ext = "mp4" if "mp4" in (q.get("mime") or "") else "webm"
+            who = "".join(ch for ch in (q.get("who") or "clip")[:24]
+                          if ch.isalnum() or ch in "-_") or "clip"
+            name = f"{who}_{time.strftime('%Y%m%d_%H%M%S')}.{ext}"
+            f = open(os.path.join(RECORD_DIR, name), "wb")
+            RECORDING[rid] = f
+            log(f"recording to {name}")
+    f.write(body)
+    f.flush()
+    return {"bytes": os.path.getsize(f.name)}
+
+def remux(path, log=print):
+    """Rewrite the concatenated fragments as a clean, seekable file.
+
+    A stream of MediaRecorder chunks plays, but it has no duration and seeks
+    badly. ffmpeg copies the streams into a proper container in a second or two -
+    no re-encoding, so nothing is lost."""
+    import shutil, subprocess
+    ff = shutil.which("ffmpeg")
+    out = os.path.splitext(path)[0] + ".mp4"
+    if not ff:
+        return path
+    r = subprocess.run([ff, "-y", "-v", "error", "-i", path,
+                        "-c", "copy", "-movflags", "+faststart", out],
+                       capture_output=True)
+    if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 1000:
+        log("could not remux; keeping the raw recording")
+        return path
+    os.remove(path)
+    return out
+
 def dish_crop(frame, q):
     """The page sends the dish's bounding box; blank the corners outside the rim."""
     r = float(q.get("dish_r") or 0)
@@ -864,7 +924,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200 if st else 404,
                               json.dumps(st or {"error": "no such job"}),
                               "application/json")
-        page = {"/": "index.html", "/upload": "upload.html"}.get(route)
+        page = {"/": "record.html", "/track": "index.html",
+                "/upload": "upload.html"}.get(route)
         if not page:
             return self._send(404, b"not found", "text/plain")
         with open(os.path.join(HERE, page), "rb") as f:
@@ -882,6 +943,19 @@ class Handler(BaseHTTPRequestHandler):
             cv2.imdecode(np.frombuffer(body, np.uint8), cv2.IMREAD_COLOR) if body else None)
         if frame is not None and route in ("/frame", "/plate", "/add"):
             frame = dish_crop(frame, q)
+
+        if route == "/record":
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                chunk = self.rfile.read(n) if n else b""
+                out = record_chunk(chunk, q,
+                                   log=lambda m: print(f"  [rec] {m}", flush=True))
+                return self._send(200, json.dumps(out))
+            except TrackingError as e:
+                return self._send(422, json.dumps({"error": str(e)}))
+            except Exception as e:
+                print("record failed:", repr(e), flush=True)
+                return self._send(500, json.dumps({"error": "could not save that chunk"}))
 
         if route == "/video":
             # A whole clip arrives here, so it is streamed to disk rather than read
@@ -993,6 +1067,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({
                 "unit": "mm" if S["cfg"]["mm_per_px"] != 1.0 else "px", "larvae": res}))
 
+        if route == "/record":
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                chunk = self.rfile.read(n) if n else b""
+                out = record_chunk(chunk, q,
+                                   log=lambda m: print(f"  [rec] {m}", flush=True))
+                return self._send(200, json.dumps(out))
+            except TrackingError as e:
+                return self._send(422, json.dumps({"error": str(e)}))
+            except Exception as e:
+                print("record failed:", repr(e), flush=True)
+                return self._send(500, json.dumps({"error": "could not save that chunk"}))
+
         if route == "/video":
             # Raw camera video, no overlay drawn on it - a clean backup you can
             # re-analyse later if the live tracking turns out to have drifted.
@@ -1018,7 +1105,8 @@ def serve(port, open_browser=True, host="127.0.0.1"):
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://localhost:{port}"
     print(f"larvatrack on {url}   (ctrl-C to stop)")
-    print(f"  live tracking   {url}/")
+    print(f"  record          {url}/")
+    print(f"  live tracking   {url}/track")
     print(f"  video uploads   {url}/upload"
           + ("   [password set]" if UPLOAD_PASSWORD else "   [no password]"))
     print(f"  {WORKERS} worker(s) x {per} threads each; clips queue when all are busy")
@@ -1033,7 +1121,7 @@ def serve(port, open_browser=True, host="127.0.0.1"):
 # ---- offline path (tuning + self-check) --------------------------------------
 def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
                   expect=None, bridge_s=15.0, edge_pct=99.0,
-                  detections_only=False, max_dish_px=0, log=print):
+                  detections_only=False, max_dish_px=0, circle=None, log=print):
     """Track every larva in a recorded clip, hands off.
 
     Decodes only the sampled frames (grab() skips the rest), cancels camera drift
@@ -1048,7 +1136,7 @@ def analyse_video(video, dish_mm, hz=2.0, max_larvae=12, stabilise=False,
     ok, f0 = cap.read()
     if not ok:
         raise TrackingError("empty video")
-    cir = find_plate(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY))
+    cir = circle or find_plate(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY))
     if not cir:
         raise TrackingError("no petri dish rim found in the first frame - is the whole "
                             "dish in shot?")
@@ -1435,6 +1523,189 @@ def video_detections(video, dish_mm, hz=2.0):
     return analyse_video(video, dish_mm, hz=hz, detections_only=True,
                          log=lambda *a: None)[0]
 
+def _one_dish(args):
+    """Measure a single dish. Module level so it can run in its own process."""
+    video, dish_mm, hz, per_dish, circle, threads = args
+    try:
+        cv2.setNumThreads(threads)
+    except Exception:
+        pass
+    try:
+        S, _cir = analyse_video(video, dish_mm, hz=hz, expect=per_dish or None,
+                               circle=circle, log=lambda *a: None)
+    except TrackingError as e:
+        return {"error": str(e)}
+    rows = []
+    for L in S["larvae"].values():
+        c = larva_cfg(S, L)
+        total, _cum, gap, bridged = path_length(L["pts"], c, L.get("offplane"))
+        dur = L["pts"][-1][0] - L["pts"][0][0]
+        seen = max(dur - gap, 1e-9)
+        rows.append({"name": L["name"], "observed": round(total, 1),
+                     "lowerBound": round(total + bridged, 1),
+                     "speed": round(total / seen, 2),
+                     "trackedSeconds": round(seen), "spanSeconds": round(dur),
+                     "pts": [(round(t, 2), round(x, 1), round(y, 1)) for t, x, y in L["pts"]],
+                     "color": L["color"]})
+    rows.sort(key=lambda x: -x["observed"])
+    return {"mmPerPx": round(S["cfg"]["mm_per_px"], 5), "larvae": rows}
+
+def analyse_all_dishes(video, dish_mm, per_dish=0, hz=2.0, log=print):
+    """Measure every petri dish in the frame, not just the one Hough liked best.
+
+    These recordings carry several dishes at once - a genotype per side, or a
+    tray of them - so each is cropped out and tracked on its own. Dishes are
+    numbered left to right, top to bottom, which is how anyone reads a bench.
+    """
+    cap = cv2.VideoCapture(video)
+    ok, f0 = cap.read()
+    cap.release()
+    if not ok:
+        raise TrackingError(f"cannot read {video!r}")
+    found = find_plates(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY), want=12)
+    if not found:
+        raise TrackingError("no petri dishes found in the first frame")
+    # Group into rows using the dishes' own size, then read each row left to
+    # right. A fixed row height put two side-by-side dishes in different rows
+    # whenever their centres differed by a few pixels, and numbered them backwards.
+    row_h = 1.5 * (sorted(c[2] for c in found)[len(found) // 2])
+    found.sort(key=lambda c: (int(c[1] / row_h), c[0]))
+    # A dish hanging off the edge of frame cannot be measured: part of the agar is
+    # simply not recorded, so any path across it is missing pieces we cannot know
+    # about. Say so plainly rather than letting it fail later as a size-window
+    # complaint, which is what it used to look like.
+    H, W = f0.shape[:2]
+    log(f"{len(found)} dishes found")
+    out, jobs = [], []
+    for i, (cx, cy, r) in enumerate(found, 1):
+        side = "left" if cx < W / 2 else "right"
+        cut = max(0, r - cx) + max(0, r - cy) + max(0, cx + r - W) + max(0, cy + r - H)
+        if cut > 0.06 * r:
+            log(f"  dish {i} ({side}): skipped - {cut:.0f} px outside the frame, "
+                f"so part of the dish was never recorded")
+            out.append({"dish": i, "side": side, "error":
+                        f"cut off by {cut:.0f} px - reframe so the whole dish is in shot"})
+            continue
+        out.append({"dish": i, "side": side, "radiusPx": round(r), "larvae": []})
+        jobs.append((len(out) - 1, (cx, cy, r)))
+
+    # One process per dish. Each pass has to decode the clip anyway, so running
+    # them together turns N sequential decodes into one wall-clock decode.
+    if jobs:
+        import concurrent.futures as cf
+        cores = os.cpu_count() or 4
+        per = max(1, cores // max(1, len(jobs)))
+        log(f"measuring {len(jobs)} dishes in parallel, {per} threads each")
+        args = [(video, dish_mm, hz, per_dish, circ, per) for _idx, circ in jobs]
+        with cf.ProcessPoolExecutor(max_workers=min(len(jobs), cores)) as ex:
+            for (idx, _c), res in zip(jobs, ex.map(_one_dish, args)):
+                d = out[idx]
+                if "error" in res:
+                    d["error"] = res["error"]
+                    log(f"  dish {d['dish']} ({d['side']}): {res['error']}")
+                else:
+                    d.update(res)
+                    log(f"  dish {d['dish']} ({d['side']}, r={d['radiusPx']}px): "
+                        + (", ".join(f"{x['observed']}mm" for x in res["larvae"])
+                           or "nothing tracked"))
+    return out, f0, found
+
+def track_seeded(video, dish_mm, boxes, hz=2.0, at=0.0, log=print):
+    """Track larvae you pointed at, instead of hunting for them.
+
+    The automatic path finds animals by differencing against a median background,
+    which cannot see a larva that has barely moved - over any window where it sits
+    still it IS the background. That is why single slow larvae came back as short
+    fragments or nothing. Given a box, the tracker locks the way the live tool
+    does, on appearance, and follows it whether it moves or not."""
+    cap = cv2.VideoCapture(video)
+    if not cap.isOpened():
+        raise TrackingError(f"cannot open {video!r}")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    step = max(1, round(fps / hz))
+    ok, f0 = cap.read()
+    if not ok:
+        raise TrackingError("empty video")
+    cir = find_plate(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY))
+    if not cir:
+        raise TrackingError("no petri dish found")
+    cx, cy, r = cir
+    mpp = dish_mm / (2 * r)
+    lo, hi = area_bounds(mpp)
+    c = dict(D, mm_per_px=mpp, min_area=lo, max_area=hi, sample_hz=hz,
+             edge_pct=99.0, max_jump=int(3.0 / mpp))
+    log(f"dish r={r:.0f}px -> {mpp:.5f} mm/px | larva {lo}-{hi} px")
+
+    # Lock each box on the frame you were looking at.
+    start = int(at * fps)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+    ok, fs = cap.read()
+    if not ok:
+        raise TrackingError("could not read the frame you picked on")
+    gs = cv2.cvtColor(fs, cv2.COLOR_BGR2GRAY)
+    larvae = {}
+    for i, (bx, by, bw, bh) in enumerate(boxes, 1):
+        x0, y0 = max(0, int(bx)), max(0, int(by))
+        x1, y1 = min(gs.shape[1], int(bx + bw)), min(gs.shape[0], int(by + bh))
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            log(f"  box {i}: too small, skipped")
+            continue
+        got = None
+        for iv, th, bb in rank(gs[y0:y1, x0:x1], c)[:40]:
+            cand = (iv, th, (bb[0], bb[1] + x0, bb[2] + y0, bb[3], bb[4], bb[5] + [x0, y0]))
+            if survives_window(gs, cand[0], cand[1], cand[2], c):
+                got = cand
+                break
+        if not got:
+            log(f"  box {i}: nothing larva-shaped in there")
+            continue
+        iv, th, b = got
+        lid = str(len(larvae) + 1)
+        larvae[lid] = {"name": f"larva {lid}", "color": PALETTE[len(larvae) % len(PALETTE)],
+                       "thresh": th, "invert": iv, "pts": [], "misses": 0,
+                       "last": (b[1], b[2]), "area": b[0], "area0": b[0]}
+        log(f"  box {i} -> {larvae[lid]['name']}: area {b[0]:.0f} px, {b[3]:.1f}:1, "
+            f"{'pale' if iv else 'dark'}, threshold {th}")
+    if not larvae:
+        raise TrackingError("none of those boxes contained something larva-shaped")
+
+    S = {"dishes": {}, "larvae": larvae, "cfg": c, "frame": None}
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+    i, n = start - 1, 0
+    while True:
+        if not cap.grab():
+            break
+        i += 1
+        if (i - start) % step:
+            continue
+        ok, f = cap.retrieve()
+        if not ok:
+            break
+        step_all(S, f, (i - start) / fps)
+        n += 1
+    cap.release()
+    log(f"{n} samples from {at:.0f}s to the end")
+    return S, cir
+
+def pick_boxes(video, at=0.0, log=print):
+    """Show a frame and let you drag a box round each larva."""
+    cap = cv2.VideoCapture(video)
+    if not cap.isOpened():
+        raise TrackingError(f"cannot open {video!r}")
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(at * (cap.get(cv2.CAP_PROP_FPS) or 30.0)))
+    ok, f = cap.read()
+    cap.release()
+    if not ok:
+        raise TrackingError("could not read that frame")
+    h, w = f.shape[:2]
+    sc = min(1.0, 1500.0 / w)
+    view = cv2.resize(f, (int(w * sc), int(h * sc))) if sc < 1.0 else f.copy()
+    log("drag a box round EACH larva, ENTER after each, ESC when done")
+    rois = cv2.selectROIs("drag a box round each larva - ENTER after each, ESC to finish",
+                          view, False, False)
+    cv2.destroyAllWindows()
+    return [(x / sc, y / sc, bw / sc, bh / sc) for x, y, bw, bh in rois]
+
 def write_overlay_video(video, St, cir, out, hz, size=760, log=print):
     """Replay the clip with each trail drawn as it is laid down.
 
@@ -1573,6 +1844,12 @@ def main():
     p.add_argument("--no-open", action="store_true", help="don't launch a browser")
     p.add_argument("--video", help="track a file instead of live, for tuning offline")
     p.add_argument("--out", default="run", help="output name prefix for --video")
+    p.add_argument("--pick", action="store_true",
+                   help="drag a box round each larva instead of hunting for them")
+    p.add_argument("--at", type=float, default=0.0,
+                   help="seconds into the clip to pick on (default 0)")
+    p.add_argument("--all-dishes", action="store_true",
+                   help="measure every dish in the frame, numbered left to right")
     p.add_argument("--max-dish-px", type=int, default=0,
                    help="downscale so the dish is at most N px across (0 = native); "
                         "caps memory, needs ~550+ to stay accurate")
@@ -1592,6 +1869,56 @@ def main():
     a = p.parse_args()
     if a.demo:
         return demo()
+    if a.video and a.pick:
+        try:
+            boxes = pick_boxes(a.video, at=a.at)
+            if not boxes:
+                sys.exit("no boxes drawn")
+            print(f"{len(boxes)} box(es) drawn")
+            St, cir = track_seeded(a.video, a.dish_mm, boxes, hz=a.sample_hz, at=a.at)
+        except TrackingError as e:
+            sys.exit(f"larvatrack: {e}")
+        r = save(os.path.splitext(a.video)[0] + "_picked", St)
+        print()
+        for row in sorted(r["larvae"], key=lambda x: -x["path"]):
+            seen = max(row["duration"] - row["gap_s"], 1e-9)
+            print(f"  {row['name']:9s} {row['path'] / seen:4.2f} {r['unit']}/s"
+                  f"  seen {row['path']:6.1f} {r['unit']}"
+                  f"  +{row['bridged']:5.1f} across gaps = {row['floor']:6.1f} min"
+                  f"  tracked {seen:4.0f}/{row['duration']:.0f}s")
+        print(f"\nwrote {r['stem']}_tracks.csv, _summary.csv, _overlay.png")
+        return
+
+    if a.video and a.all_dishes:
+        try:
+            res, f0, found = analyse_all_dishes(a.video, a.dish_mm,
+                                                per_dish=a.larvae or 0, hz=a.sample_hz)
+        except TrackingError as e:
+            sys.exit(f"larvatrack: {e}")
+        stem = os.path.splitext(a.video)[0]
+        im = f0.copy()
+        for d in res:
+            cx, cy, r = found[d["dish"] - 1]
+            cv2.circle(im, (int(cx), int(cy)), int(r), (90, 200, 90), 3)
+            cv2.putText(im, f"{d['dish']} ({d['side']})", (int(cx) - 70, int(cy) - int(r) + 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (90, 200, 90), 3)
+            for L in d.get("larvae", []):
+                if len(L.get("pts", [])) > 1:
+                    xy = np.array([[x + cx - r, y + cy - r] for _, x, y in L["pts"]], np.int32)
+                    cv2.polylines(im, [xy], False, bgr(L["color"]), 2)
+        cv2.imwrite(stem + "_dishes.png", im)
+        with open(stem + "_dishes.csv", "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["dish", "side", "larva", "observed_mm", "lower_bound_mm",
+                        "speed_mm_s", "tracked_s", "span_s"])
+            for d in res:
+                for L in d.get("larvae", []):
+                    w.writerow([d["dish"], d["side"], L["name"], L["observed"],
+                                L["lowerBound"], L["speed"], L["trackedSeconds"],
+                                L["spanSeconds"]])
+        print(f"\nwrote {os.path.basename(stem)}_dishes.csv and _dishes.png")
+        return
+
     if a.video:
       try:
         St, cir = analyse_video(a.video, a.dish_mm, hz=a.sample_hz,
