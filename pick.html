@@ -105,8 +105,14 @@ tr:last-child td{border-bottom:none}
         <th>Speed</th><th>Tracked</th><th>Off agar</th></tr></thead>
         <tbody id="rows"></tbody></table></div>
       <p class="note" id="rmeta"></p>
-      <img id="rov" alt="the dish with each larva's path drawn on it"
-           style="width:100%;margin-top:12px;border:1px solid var(--line);border-radius:6px" hidden>
+      <figure id="rovwrap" style="margin:14px 0 0" hidden>
+        <img id="rov" alt="the dish with each larva's path drawn on it"
+             style="width:100%;border:1px solid var(--line);border-radius:6px;display:block">
+        <figcaption class="note" style="display:flex;gap:14px;align-items:center">
+          <span>Every tracked position, joined. Smooth and continuous is what a real trail
+          looks like — a tight spiky knot is not.</span>
+          <a id="dl" download style="color:var(--accent);white-space:nowrap">Save image</a>
+        </figcaption></figure>
       <div class="caveat"><b>Observed</b> is the route actually seen. <b>Least it walked</b> adds the
       straight line across stretches where the larva was lost — it got from one end to the other, so
       that distance is a floor, not a guess. Speed is the steadier figure; the total depends on how
@@ -230,7 +236,12 @@ $('go').onclick = async () => {
       <td>${L.offAgarSeconds ? L.offAgarSeconds+' s' : '—'}</td></tr>`).join('');
     $('rmeta').textContent = `dish radius ${d.dishRadiusPx} px · ${d.mmPerPx} mm per pixel `
       + `· saved as ${d.files}_tracks.csv, _summary.csv, _overlay.png`;
-    if (d.overlay){ $('rov').src = d.overlay; $('rov').hidden = false; }
+    if (d.overlay){
+      $('rov').src = d.overlay;
+      $('dl').href = d.overlay; $('dl').download = d.files + '_overlay.png';
+      $('rovwrap').hidden = false;
+      $('rov').scrollIntoView({behavior:'smooth', block:'nearest'});
+    }
     $('out').hidden = false;
     st('Done.', 'good');
   } catch (e) { st(e.message, 'bad'); }

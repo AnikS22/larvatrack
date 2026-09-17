@@ -1805,14 +1805,35 @@ def track_seeded(video, dish_mm, boxes, hz=2.0, at=0.0, log=print):
     ok, f0 = cap.read()
     if not ok:
         raise TrackingError("empty video")
-    cir = find_plate(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY))
-    if not cir:
-        raise TrackingError("no petri dish found")
+    # Use the dish your boxes are IN, not whichever one Hough happened to like
+    # first. These frames carry several plates, so picking the wrong one put the
+    # larva outside the crop entirely and the lock failed with nothing to show.
+    plates = find_plates(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY), want=12) or []
+    if not plates:
+        one = find_plate(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY))
+        if not one:
+            raise TrackingError("no petri dish found in the first frame")
+        plates = [one]
+    bcx = sum(b[0] + b[2] / 2 for b in boxes) / len(boxes)
+    bcy = sum(b[1] + b[3] / 2 for b in boxes) / len(boxes)
+    inside = [p for p in plates if math.hypot(bcx - p[0], bcy - p[1]) <= p[2]]
+    cir = min(inside or plates, key=lambda p: math.hypot(bcx - p[0], bcy - p[1]))
+    if not inside:
+        log("warning: your boxes are not inside any dish the tracker found; "
+            "using the nearest one, so the mm scale may be wrong")
     cx, cy, r = cir
     mpp = dish_mm / (2 * r)
     lo, hi = area_bounds(mpp)
     c = dict(D, mm_per_px=mpp, min_area=lo, max_area=hi, sample_hz=hz,
              edge_pct=99.0, max_jump=int(3.0 / mpp))
+    # Work on the dish, not the whole bench. Without this the tracker could follow
+    # something on the table or in a neighbouring plate, and the overlay came out
+    # as a full frame where the trail was a speck.
+    ox, oy = max(0, int(cx - r)), max(0, int(cy - r))
+    side = int(2 * r)
+    ccx, ccy = cx - ox, cy - oy
+    crop = lambda f: mask_dish(f[oy:oy + side, ox:ox + side], ccx, ccy, r,
+                               shrink=c["edge_pct"] / 100.0)
     log(f"dish r={r:.0f}px -> {mpp:.5f} mm/px | larva {lo}-{hi} px")
 
     # Lock each box on the frame you were looking at.
@@ -1821,9 +1842,10 @@ def track_seeded(video, dish_mm, boxes, hz=2.0, at=0.0, log=print):
     ok, fs = cap.read()
     if not ok:
         raise TrackingError("could not read the frame you picked on")
-    gs = cv2.cvtColor(fs, cv2.COLOR_BGR2GRAY)
+    gs = cv2.cvtColor(crop(fs), cv2.COLOR_BGR2GRAY)
     larvae = {}
     for i, (bx, by, bw, bh) in enumerate(boxes, 1):
+        bx, by = bx - ox, by - oy                    # your boxes are in frame coords
         x0, y0 = max(0, int(bx)), max(0, int(by))
         x1, y1 = min(gs.shape[1], int(bx + bw)), min(gs.shape[0], int(by + bh))
         if x1 - x0 < 8 or y1 - y0 < 8:
@@ -1860,7 +1882,7 @@ def track_seeded(video, dish_mm, boxes, hz=2.0, at=0.0, log=print):
         ok, f = cap.retrieve()
         if not ok:
             break
-        step_all(S, f, (i - start) / fps)
+        step_all(S, crop(f), (i - start) / fps)
         n += 1
     cap.release()
     log(f"{n} samples from {at:.0f}s to the end")
