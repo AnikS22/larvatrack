@@ -959,7 +959,7 @@ def video_meta(path):
             "dish": None if not dish else {"cx": round(dish[0]), "cy": round(dish[1]),
                                            "r": round(dish[2])}}
 
-def frame_jpeg(path, t, width=1100):
+def dishes_in(path, t=0.0):
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
         raise TrackingError("cannot open that video")
@@ -969,6 +969,37 @@ def frame_jpeg(path, t, width=1100):
     cap.release()
     if not ok:
         raise TrackingError("no frame at that time")
+    H, W = f.shape[:2]
+    found = find_plates(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), want=12)
+    if found:
+        row_h = 1.5 * sorted(c[2] for c in found)[len(found) // 2]
+        found.sort(key=lambda c: (int(c[1] / row_h), c[0]))
+    out = []
+    for i, (cx, cy, r) in enumerate(found, 1):
+        cut = max(0, r - cx) + max(0, r - cy) + max(0, cx + r - W) + max(0, cy + r - H)
+        out.append({"n": i, "cx": round(cx), "cy": round(cy), "r": round(r),
+                    "side": "left" if cx < W / 2 else "right",
+                    "cutOff": round(cut) if cut > 0.06 * r else 0})
+    return {"width": W, "height": H, "dishes": out}
+
+def frame_jpeg(path, t, width=1100, crop=None):
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise TrackingError("cannot open that video")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(t * fps)))
+    ok, f = cap.read()
+    cap.release()
+    if not ok:
+        raise TrackingError("no frame at that time")
+    if crop:                                         # zoom to the chosen dish
+        ccx, ccy, cr = crop
+        pad = int(cr * 1.06)
+        x0, y0 = max(0, int(ccx - pad)), max(0, int(ccy - pad))
+        x1 = min(f.shape[1], int(ccx + pad))
+        y1 = min(f.shape[0], int(ccy + pad))
+        if x1 - x0 > 20 and y1 - y0 > 20:
+            f = f[y0:y1, x0:x1]
     if f.shape[1] > width:
         f = cv2.resize(f, (width, int(f.shape[0] * width / f.shape[1])))
     return cv2.imencode(".jpg", f, [int(cv2.IMWRITE_JPEG_QUALITY), 88])[1].tobytes()
@@ -977,7 +1008,7 @@ def run_pick_job(job, log):
     q = job["q"]
     S, cir = track_seeded(job["path"], float(q["dish_mm"]), job["boxes"],
                           hz=float(q.get("hz") or 2.0), at=float(q.get("at") or 0.0),
-                          log=log)
+                          circle=job.get("circle"), log=log)
     stem = os.path.splitext(job["path"])[0] + "_picked"
     saved = save(stem, S)
     unit = saved["unit"]
@@ -1031,13 +1062,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(
                 {"videos": vids, "clipDir": os.path.basename(CLIP_DIR),
                  "everywhere": len(list_videos(scope="all"))}), "application/json")
-        if route in ("/meta", "/frame_img"):
+        if route in ("/meta", "/frame_img", "/dishes"):
             q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
             try:
                 p = safe_video(q.get("path") or "")
                 if route == "/meta":
                     return self._send(200, json.dumps(video_meta(p)), "application/json")
-                return self._send(200, frame_jpeg(p, float(q.get("t") or 0)), "image/jpeg")
+                if route == "/dishes":
+                    return self._send(200, json.dumps(dishes_in(p, float(q.get("t") or 0))),
+                                      "application/json")
+                cropq = q.get("crop")
+                crop = [float(v) for v in cropq.split(",")] if cropq else None
+                return self._send(200, frame_jpeg(p, float(q.get("t") or 0), crop=crop),
+                                  "image/jpeg")
             except TrackingError as e:
                 return self._send(422, json.dumps({"error": str(e)}), "application/json")
         if route == "/job":
@@ -1079,9 +1116,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, json.dumps({"error": "dish must be 20-200 mm"}))
                 with JOBS_LOCK:
                     jid = f"p{len(JOBS) + 1}-{time.strftime('%H%M%S')}"
+                    dsh = req.get("dish")
                     JOBS[jid] = {"id": jid, "seq": len(JOBS), "kind": "pick",
                                  "who": os.path.basename(path), "path": path,
                                  "boxes": boxes, "megabytes": 0,
+                                 "circle": ((float(dsh["cx"]), float(dsh["cy"]),
+                                             float(dsh["r"])) if dsh else None),
                                  "q": {"dish_mm": dish_mm, "at": req.get("at") or 0,
                                        "hz": req.get("hz") or 2.0},
                                  "state": "queued", "stage": "waiting for a worker",
@@ -1230,9 +1270,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, json.dumps({"error": "dish must be 20-200 mm"}))
                 with JOBS_LOCK:
                     jid = f"p{len(JOBS) + 1}-{time.strftime('%H%M%S')}"
+                    dsh = req.get("dish")
                     JOBS[jid] = {"id": jid, "seq": len(JOBS), "kind": "pick",
                                  "who": os.path.basename(path), "path": path,
                                  "boxes": boxes, "megabytes": 0,
+                                 "circle": ((float(dsh["cx"]), float(dsh["cy"]),
+                                             float(dsh["r"])) if dsh else None),
                                  "q": {"dish_mm": dish_mm, "at": req.get("at") or 0,
                                        "hz": req.get("hz") or 2.0},
                                  "state": "queued", "stage": "waiting for a worker",
@@ -1789,7 +1832,7 @@ def analyse_all_dishes(video, dish_mm, per_dish=0, hz=2.0, log=print):
                            or "nothing tracked"))
     return out, f0, found
 
-def track_seeded(video, dish_mm, boxes, hz=2.0, at=0.0, log=print):
+def track_seeded(video, dish_mm, boxes, hz=2.0, at=0.0, circle=None, log=print):
     """Track larvae you pointed at, instead of hunting for them.
 
     The automatic path finds animals by differencing against a median background,
@@ -1808,8 +1851,12 @@ def track_seeded(video, dish_mm, boxes, hz=2.0, at=0.0, log=print):
     # Use the dish your boxes are IN, not whichever one Hough happened to like
     # first. These frames carry several plates, so picking the wrong one put the
     # larva outside the crop entirely and the lock failed with nothing to show.
-    plates = find_plates(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY), want=12) or []
-    if not plates:
+    if circle:                                       # you chose the dish explicitly
+        cir = tuple(float(v) for v in circle)
+        plates = [cir]
+    else:
+        plates = find_plates(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY), want=12) or []
+    if not plates and not circle:
         one = find_plate(cv2.cvtColor(f0, cv2.COLOR_BGR2GRAY))
         if not one:
             raise TrackingError("no petri dish found in the first frame")

@@ -50,14 +50,33 @@ tr:last-child td{border-bottom:none}
 .note{font-size:12.5px;color:var(--muted);margin:10px 0 0}
 .caveat{background:var(--sunk);border-left:3px solid var(--warn);padding:11px 13px;margin:12px 0 0;font-size:13px;color:var(--muted)}
 .tablewrap{overflow-x:auto}
+.steps{list-style:none;display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 0;padding:0;
+  font-family:var(--mono);font-size:12px}
+.steps li{padding:5px 11px;border:1px solid var(--line);border-radius:20px;color:var(--muted)}
+.steps li b{color:var(--muted);margin-right:5px}
+.steps li.on{border-color:var(--accent);color:var(--accent);background:var(--sunk)}
+.steps li.on b{color:var(--accent)}
+.steps li.done{border-color:var(--line);color:var(--ink)}
+.steps li.done b::before{content:"\2713 ";}
+.steps li.done b{font-size:0}
+.steps li.done b::before{font-size:12px;color:var(--accent)}
+.dishbtns{display:flex;flex-wrap:wrap;gap:7px;margin:8px 0 0}
+.dishbtns button{width:auto;padding:7px 12px;font-size:13px;background:var(--sunk);
+  color:var(--ink);border:1px solid var(--line);font-weight:500}
+.dishbtns button.on{background:var(--accent);color:var(--ground);border-color:var(--accent)}
+.dishbtns button.cut{opacity:.45}
 </style></head><body>
 <div class="wrap">
   <header>
     <p class="eyebrow">Drosophila larval foraging</p>
     <h1>Larval Path Length</h1>
-    <p class="sub">Pick a clip, scrub to a frame where you can see the larvae, drag a box round
-    each one, and it measures how far they crawl. Pointing beats hunting: a larva that sits still
-    is invisible to motion-based detection, but obvious to you.</p>
+    <p class="sub">Choose a dish, box the larvae inside it, save. Pointing beats hunting: a larva
+    that sits still is invisible to motion-based detection, but obvious to you.</p>
+    <ol class="steps" id="steps">
+      <li id="st1"><b>1</b> Choose the dish</li>
+      <li id="st2"><b>2</b> Box each larva</li>
+      <li id="st3"><b>3</b> Measure and save</li>
+    </ol>
   </header>
 
   <div>
@@ -79,21 +98,24 @@ tr:last-child td{border-bottom:none}
       <button class="ghost" id="refresh" type="button">Refresh list</button>
     </fieldset>
 
-    <fieldset><legend>Dish</legend>
+    <fieldset><legend>Step 1 — dish</legend>
       <label><span>Diameter in mm</span>
         <input type="number" id="dish" value="100" min="20" max="200" step="0.5"></label>
+      <p class="note" style="margin-top:0">Click the dish you want to measure.</p>
+      <div class="dishbtns" id="dishbtns"></div>
       <p class="note" id="dishnote">—</p>
     </fieldset>
 
-    <fieldset><legend>Larvae</legend>
-      <p class="note" style="margin-top:0">Drag a box round each larva. Box loosely — it finds the
-      animal inside your box.</p>
+    <fieldset id="larvafs" disabled style="opacity:.45"><legend>Step 2 — larvae</legend>
+      <p class="note" style="margin-top:0">Drag a box round each larva in the dish. Box loosely —
+      it finds the animal inside your box.</p>
       <ul class="boxes" id="list"></ul>
       <button class="ghost" id="clear" type="button">Clear all boxes</button>
+      <button class="ghost" id="back" type="button">← Choose a different dish</button>
     </fieldset>
 
-    <fieldset><legend>Measure</legend>
-      <button id="go" type="button" disabled>Measure</button>
+    <fieldset><legend>Step 3 — measure</legend>
+      <button id="go" type="button" disabled>Measure and save</button>
       <p id="status">Pick a clip to start.</p>
     </fieldset>
   </div>
@@ -124,8 +146,17 @@ tr:last-child td{border-bottom:none}
 <script>
 const $ = id => document.getElementById(id);
 const PAL = ["#ff4d4d","#4dd2ff","#7dff4d","#ffd24d","#e04dff","#4d6bff","#ff934d","#4dffc3"];
-let meta = null, boxes = [], drag = null, scale = 1;
+let meta = null, dishes = [], dish = null, boxes = [], drag = null;
 const st = (m, c) => { $('status').innerHTML = c ? `<span class="${c}">${m}</span>` : m; };
+
+function steps(){
+  const at = !dish ? 1 : (boxes.length ? 3 : 2);
+  [1,2,3].forEach(i => { const e = $('st'+i);
+    e.classList.toggle('on', i === at); e.classList.toggle('done', i < at); });
+  $('larvafs').disabled = !dish;
+  $('larvafs').style.opacity = dish ? 1 : .45;
+  $('go').disabled = !(dish && boxes.length);
+}
 
 async function loadList(){
   const scope = $('all').checked ? 'all' : 'near';
@@ -136,44 +167,91 @@ async function loadList(){
     `<option value="${v.path}">${v.name} — ${v.megabytes} MB (${v.dir})</option>`).join('');
   await loadMeta();
 }
+
 async function loadMeta(){
-  boxes = []; renderBoxes();
-  const path = $('file').value;
-  const r = await fetch('/meta?path=' + encodeURIComponent(path));
+  dish = null; boxes = []; renderBoxes();
+  const r = await fetch('/meta?path=' + encodeURIComponent($('file').value));
   const d = await r.json();
-  if (d.error) { meta = null; $('meta').textContent = d.error; return st(d.error, 'bad'); }
+  if (d.error){ meta = null; $('meta').textContent = d.error; return st(d.error, 'bad'); }
   meta = d;
   $('meta').textContent = `${d.seconds}s · ${d.width}×${d.height} · ${d.fps} fps`;
-  $('dishnote').innerHTML = d.dish
-    ? `Dish found at radius ${d.dish.r} px → <b>${(parseFloat($('dish').value)/(2*d.dish.r)).toFixed(5)} mm/px</b>`
-    : '<span class="bad">No dish rim found — measurements need one.</span>';
   $('t').max = Math.max(0, d.seconds - 1); $('t').value = 0;
+  await loadDishes();
   await showFrame();
-  st('Drag a box round each larva.');
+  steps();
 }
+
+async function loadDishes(){
+  const t = parseFloat($('t').value);
+  const d = await (await fetch(`/dishes?path=${encodeURIComponent($('file').value)}&t=${t}`)).json();
+  dishes = d.dishes || [];
+  $('dishbtns').innerHTML = dishes.length
+    ? dishes.map(x => `<button type="button" data-n="${x.n}" class="${x.cutOff?'cut':''}"
+        title="${x.cutOff ? x.cutOff+' px outside the frame' : 'fully in shot'}">
+        dish ${x.n} (${x.side})${x.cutOff ? ' ⚠' : ''}</button>`).join('')
+    : '<span class="note">No dishes found in this frame.</span>';
+  $('dishbtns').querySelectorAll('button').forEach(b => b.onclick = () => chooseDish(+b.dataset.n));
+  st(dishes.length ? 'Click the dish you want to measure.' : 'No dish rim found in this frame.',
+     dishes.length ? null : 'bad');
+}
+
+async function chooseDish(n){
+  dish = dishes.find(x => x.n === n) || null;
+  boxes = []; renderBoxes();
+  $('dishbtns').querySelectorAll('button').forEach(b =>
+    b.classList.toggle('on', +b.dataset.n === n));
+  if (dish){
+    const mm = parseFloat($('dish').value) / (2 * dish.r);
+    $('dishnote').innerHTML = `Dish ${dish.n}, radius ${dish.r} px → <b>${mm.toFixed(5)} mm/px</b>`
+      + (dish.cutOff ? `<br><span class="bad">${dish.cutOff} px of it is outside the frame —
+         part of the agar was never recorded.</span>` : '');
+  }
+  await showFrame();
+  steps();
+}
+
 async function showFrame(){
   const t = parseFloat($('t').value);
-  $('tlabel').textContent = `Frame at ${t.toFixed(1)} s — drag on the image to box a larva`;
-  $('shot').src = `/frame_img?path=${encodeURIComponent($('file').value)}&t=${t}`;
+  $('tlabel').textContent = dish
+    ? `Dish ${dish.n} at ${t.toFixed(1)} s — drag on the image to box a larva`
+    : `Frame at ${t.toFixed(1)} s — choose a dish on the right`;
+  const crop = dish ? `&crop=${dish.cx},${dish.cy},${dish.r}` : '';
+  $('shot').src = `/frame_img?path=${encodeURIComponent($('file').value)}&t=${t}${crop}`;
 }
+
+// The served image is a crop of the dish, scaled down. Convert what you draw on
+// screen back into the video's own pixels, via the crop origin.
+function toVideo(x, y){
+  const img = $('shot');
+  const k = (dish ? Math.min(2*Math.round(dish.r*1.06), meta.width) : meta.width) / img.naturalWidth;
+  const s = img.naturalWidth / img.clientWidth;
+  const ox = dish ? Math.max(0, Math.round(dish.cx - dish.r*1.06)) : 0;
+  const oy = dish ? Math.max(0, Math.round(dish.cy - dish.r*1.06)) : 0;
+  return [ox + x * s * k, oy + y * s * k];
+}
+
 $('shot').onload = () => {
   const c = $('ov');
   c.width = $('shot').clientWidth; c.height = $('shot').clientHeight;
   c.style.width = c.width+'px'; c.style.height = c.height+'px';
-  scale = meta ? meta.width / $('shot').naturalWidth : 1;   // served frame is downscaled
   paint();
 };
 $('file').onchange = loadMeta;
 $('refresh').onclick = loadList;
 $('all').onchange = loadList;
+$('t').onchange = async () => { await loadDishes(); if (dish){
+  const same = dishes.find(x => x.n === dish.n); dish = same || null; }
+  await showFrame(); steps(); };
 $('t').oninput = showFrame;
-$('dish').oninput = () => { if (meta && meta.dish)
-  $('dishnote').innerHTML = `Dish found at radius ${meta.dish.r} px → <b>${(parseFloat($('dish').value)/(2*meta.dish.r)).toFixed(5)} mm/px</b>`; };
+$('dish').oninput = () => { if (dish) chooseDish(dish.n); };
+$('back').onclick = () => { dish = null; boxes = []; renderBoxes();
+  $('dishbtns').querySelectorAll('button').forEach(b => b.classList.remove('on'));
+  showFrame(); steps(); };
 
-// boxes are drawn in displayed pixels, then converted to the video's own pixels
 const at = e => { const r = $('shot').getBoundingClientRect();
   return [e.clientX - r.left, e.clientY - r.top]; };
-$('shot').onmousedown = e => { e.preventDefault(); const [x,y] = at(e); drag = {x,y,w:0,h:0}; };
+$('shot').onmousedown = e => { if (!dish) return st('Choose a dish first.', 'bad');
+  e.preventDefault(); const [x,y] = at(e); drag = {x,y,w:0,h:0}; };
 window.addEventListener('mousemove', e => { if (!drag) return;
   const [x,y] = at(e); drag.w = x-drag.x; drag.h = y-drag.y; paint(); });
 window.addEventListener('mouseup', () => {
@@ -182,8 +260,9 @@ window.addEventListener('mouseup', () => {
              w:Math.abs(drag.w), h:Math.abs(drag.h)};
   drag = null;
   if (b.w > 8 && b.h > 8) boxes.push(b);
-  renderBoxes(); paint();
+  renderBoxes(); paint(); steps();
 });
+
 function renderBoxes(){
   $('list').innerHTML = boxes.length
     ? boxes.map((b,i)=>`<li><span class="sw" style="background:${PAL[i%PAL.length]}"></span>
@@ -191,11 +270,11 @@ function renderBoxes(){
         <button data-i="${i}" title="remove">&times;</button></li>`).join('')
     : '<li style="color:var(--muted)">none yet</li>';
   $('list').querySelectorAll('button').forEach(btn => btn.onclick = () => {
-    boxes.splice(+btn.dataset.i, 1); renderBoxes(); paint(); });
-  $('go').disabled = !boxes.length || !meta;
+    boxes.splice(+btn.dataset.i, 1); renderBoxes(); paint(); steps(); });
 }
 function paint(){
-  const c = $('ov'), g = c.getContext('2d');
+  const c = $('ov'); if (!c.getContext) return;
+  const g = c.getContext('2d');
   g.clearRect(0,0,c.width,c.height);
   boxes.forEach((b,i)=>{ g.strokeStyle = PAL[i%PAL.length]; g.lineWidth = 2;
     g.strokeRect(b.x,b.y,b.w,b.h);
@@ -204,15 +283,15 @@ function paint(){
   if (drag){ g.strokeStyle = '#fc0'; g.lineWidth = 2; g.setLineDash([5,4]);
     g.strokeRect(drag.x,drag.y,drag.w,drag.h); g.setLineDash([]); }
 }
-$('clear').onclick = () => { boxes = []; renderBoxes(); paint(); };
+$('clear').onclick = () => { boxes = []; renderBoxes(); paint(); steps(); };
 
 $('go').onclick = async () => {
   $('go').disabled = true; $('out').hidden = true;
-  const s = $('shot').clientWidth / $('shot').naturalWidth;   // display → served frame
-  const k = scale / s;                                        // display → video pixels
   const payload = {path:$('file').value, dishMm:parseFloat($('dish').value),
-    at:parseFloat($('t').value),
-    boxes: boxes.map(b => [b.x*k, b.y*k, b.w*k, b.h*k])};
+    at:parseFloat($('t').value), dish:{cx:dish.cx, cy:dish.cy, r:dish.r},
+    boxes: boxes.map(b => { const [x0,y0] = toVideo(b.x, b.y);
+                            const [x1,y1] = toVideo(b.x+b.w, b.y+b.h);
+                            return [x0, y0, x1-x0, y1-y0]; })};
   try {
     st('Queued…');
     const r = await fetch('/pick', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -243,9 +322,9 @@ $('go').onclick = async () => {
       $('rov').scrollIntoView({behavior:'smooth', block:'nearest'});
     }
     $('out').hidden = false;
-    st('Done.', 'good');
+    st('Done — saved next to the video.', 'good');
   } catch (e) { st(e.message, 'bad'); }
-  finally { $('go').disabled = false; }
+  finally { $('go').disabled = false; steps(); }
 };
 loadList();
 </script></body></html>
