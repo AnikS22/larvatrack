@@ -898,13 +898,21 @@ def remux(path, log=print):
 
 # Videos already live on this machine, so the page lists them and asks for a
 # frame by path - no upload of a file that is six inches away.
-VIDEO_DIRS = [os.path.join(HERE, "recordings"), os.path.join(HERE, "uploads"),
-              os.path.expanduser("~/Downloads"), os.path.expanduser("~/Desktop")]
+# clips/ is the working set - the clips actually being analysed. Downloads and
+# Desktop hold dozens of unrelated videos, so they are only listed on request.
+CLIP_DIR = os.path.join(HERE, "clips")
+NEAR_DIRS = [CLIP_DIR, os.path.join(HERE, "recordings"), os.path.join(HERE, "uploads")]
+VIDEO_DIRS = NEAR_DIRS + [os.path.expanduser("~/Downloads"), os.path.expanduser("~/Desktop")]
 VIDEO_EXT = (".mp4", ".mov", ".webm", ".m4v", ".avi")
 
-def list_videos(limit=80):
+def list_videos(limit=200, scope="near"):
+    dirs = VIDEO_DIRS if scope == "all" else NEAR_DIRS
+    if scope != "all" and not any(
+            os.path.isdir(d) and any(n.lower().endswith(VIDEO_EXT) for n in os.listdir(d))
+            for d in dirs):
+        dirs = VIDEO_DIRS                            # nothing set aside yet: show it all
     out = []
-    for d in VIDEO_DIRS:
+    for d in dirs:
         if not os.path.isdir(d):
             continue
         try:
@@ -1018,8 +1026,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         route = urlparse(self.path).path
         if route == "/videos":
-            return self._send(200, json.dumps({"videos": list_videos()}),
-                              "application/json")
+            q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            vids = list_videos(scope=q.get("scope") or "near")
+            return self._send(200, json.dumps(
+                {"videos": vids, "clipDir": os.path.basename(CLIP_DIR),
+                 "everywhere": len(list_videos(scope="all"))}), "application/json")
         if route in ("/meta", "/frame_img"):
             q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
             try:

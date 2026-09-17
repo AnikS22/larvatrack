@@ -73,6 +73,9 @@ tr:last-child td{border-bottom:none}
     <fieldset><legend>Clip</legend>
       <select id="file"></select>
       <p class="note" id="meta">—</p>
+      <label style="display:flex;align-items:center;gap:8px;margin:10px 0 0;font-size:13px;color:var(--muted)">
+        <input type="checkbox" id="all" style="width:auto">
+        <span style="margin:0" id="alllabel">also show Downloads and Desktop</span></label>
       <button class="ghost" id="refresh" type="button">Refresh list</button>
     </fieldset>
 
@@ -119,8 +122,10 @@ let meta = null, boxes = [], drag = null, scale = 1;
 const st = (m, c) => { $('status').innerHTML = c ? `<span class="${c}">${m}</span>` : m; };
 
 async function loadList(){
-  const d = await (await fetch('/videos')).json();
-  if (!d.videos.length) return st('No videos found in Downloads, Desktop, recordings or uploads.', 'bad');
+  const scope = $('all').checked ? 'all' : 'near';
+  const d = await (await fetch('/videos?scope=' + scope)).json();
+  $('alllabel').textContent = `also show Downloads and Desktop (${d.everywhere} videos in total)`;
+  if (!d.videos.length) return st(`No videos in ${d.clipDir}/, recordings/ or uploads/.`, 'bad');
   $('file').innerHTML = d.videos.map(v =>
     `<option value="${v.path}">${v.name} — ${v.megabytes} MB (${v.dir})</option>`).join('');
   await loadMeta();
@@ -154,6 +159,7 @@ $('shot').onload = () => {
 };
 $('file').onchange = loadMeta;
 $('refresh').onclick = loadList;
+$('all').onchange = loadList;
 $('t').oninput = showFrame;
 $('dish').oninput = () => { if (meta && meta.dish)
   $('dishnote').innerHTML = `Dish found at radius ${meta.dish.r} px → <b>${(parseFloat($('dish').value)/(2*meta.dish.r)).toFixed(5)} mm/px</b>`; };
