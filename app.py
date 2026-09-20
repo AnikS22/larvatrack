@@ -54,6 +54,13 @@ MAX_UPLOAD = 2 * 1024 ** 3          # 2GB; a 8min 4K clip is well under this
 MIN_DISH_PX = 440
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+# Files already on this machine, offered instead of an upload. Only enabled with
+# --local, and the server then binds to localhost: this hands out the contents of
+# real directories, which has no business being reachable through a tunnel.
+LOCAL = False
+LOCAL_DIRS = []
+LOCAL_IDS = {}
+VIDEO_EXT = (".mp4", ".mov", ".m4v", ".avi", ".mkv")
 EXPECTED = {}                       # upload id -> byte count the client promised
 # ponytail: one worker. The measurement is CPU-bound on every core already, so a
 # second job in parallel finishes both later than running them in turn.
@@ -216,6 +223,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(400, str(e))
             ok, buf = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 85])
             return self.send(200, buf.tobytes(), "image/jpeg")
+        if u.path == "/local":
+            if not LOCAL:
+                return self.fail(403, "local files are off on this server")
+            out = []
+            for rank, d in enumerate(LOCAL_DIRS):
+                for name in sorted(os.listdir(d)):
+                    if not name.lower().endswith(VIDEO_EXT) or name.startswith("."):
+                        continue
+                    p = os.path.realpath(os.path.join(d, name))
+                    if not os.path.isfile(p):
+                        continue
+                    out.append({"path": p, "name": name, "rank": rank,
+                                "dir": os.path.basename(d.rstrip("/")) or d,
+                                "mb": round(os.path.getsize(p) / 1048576.0)})
+            # Assay recordings first, then by name. Sorting by size just floated
+            # unrelated 6GB video projects to the top of the list.
+            out.sort(key=lambda r: (r["rank"], r["name"].lower()))
+            return self.send(200, {"files": out[:400]})
+
         if u.path == "/health":
             with QUEUE_CV:
                 waiting = len(QUEUE)
@@ -245,6 +271,9 @@ class Handler(BaseHTTPRequestHandler):
     def _upload(self, upload_id):
         if not upload_id:
             return None
+        if upload_id in LOCAL_IDS:
+            p = LOCAL_IDS[upload_id]
+            return p if os.path.isfile(p) else None
         p = os.path.join(UPLOADS, os.path.basename(upload_id))
         return p if os.path.isfile(p) else None
 
@@ -345,6 +374,26 @@ class Handler(BaseHTTPRequestHandler):
                                    "dur": round(dur, 1),
                                    "dishes": dishes_in(frame)})
 
+        if u.path == "/local/pick":
+            if not LOCAL:
+                return self.fail(403, "local files are off on this server")
+            body = json.loads(self.rfile.read(n) or b"{}")
+            want = os.path.realpath(body.get("path") or "")
+            # Must sit inside a directory that was explicitly offered.
+            if not any(want.startswith(os.path.realpath(d) + os.sep)
+                       for d in LOCAL_DIRS) or not os.path.isfile(want):
+                return self.fail(404, "that file is not one of the offered ones")
+            try:
+                frame, dur = first_frame(want)
+            except ValueError as e:
+                return self.fail(400, str(e))
+            token = "local:" + safe_id(os.path.basename(want))
+            LOCAL_IDS[token] = want
+            h, w = frame.shape[:2]
+            return self.send(200, {"id": token, "w": w, "h": h,
+                                   "dur": round(dur, 1),
+                                   "dishes": dishes_in(frame)})
+
         if u.path == "/measure":
             body = json.loads(self.rfile.read(n) or b"{}")
             path = self._upload(body.get("id"))
@@ -383,11 +432,26 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global LOCAL, LOCAL_DIRS, PORT
+    if "--port" in sys.argv:
+        PORT = int(sys.argv[sys.argv.index("--port") + 1])
+    if "--local" in sys.argv:
+        LOCAL = True
+        LOCAL_DIRS = [d for d in (
+            os.path.join(HERE, "videos"),     # the assay recordings, listed first
+            os.path.join(HERE, "clips"),
+            os.path.expanduser("~/Downloads"),
+            UPLOADS,
+        ) if os.path.isdir(d)]
     os.makedirs(UPLOADS, exist_ok=True)
     os.makedirs(REPLAYS, exist_ok=True)
     threading.Thread(target=worker, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print("larvatrack  ->  http://localhost:%d   (one larva per dish)" % PORT)
+    if LOCAL:
+        print("local files on, no upload needed, from:")
+        for d in LOCAL_DIRS:
+            print("   ", d)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

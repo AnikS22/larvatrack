@@ -88,6 +88,11 @@ a{color:var(--accent)}
       <div class="card">
         <fieldset>
           <legend>1 — clip</legend>
+          <div id="localbox" hidden>
+            <label>A clip already on this machine — no upload
+              <select id="localsel"><option value="">choose a file…</option></select></label>
+            <p class="note" style="margin:0 0 10px">or upload one:</p>
+          </div>
           <label>Video file<input type="file" id="file" accept="video/*"></label>
           <div id="barwrap" hidden><div id="bar"></div></div>
           <p class="note" id="upnote">MP4 or MOV, straight off the phone.</p>
@@ -171,6 +176,34 @@ async function health(){
   }
 }
 health();
+
+// When the server offers files already on disk, use them: nothing to transfer,
+// which matters most for the clips that live on this machine anyway.
+(async function localFiles(){
+  try{
+    const j = await (await api('/local')).json();
+    if(!j.files || !j.files.length) return;
+    const sel = $('localsel');
+    j.files.forEach(f => {
+      const o = document.createElement('option');
+      o.value = f.path; o.textContent = `${f.name}  (${f.mb} MB, ${f.dir})`;
+      sel.appendChild(o);
+    });
+    $('localbox').hidden = false;
+    sel.onchange = async () => {
+      if(!sel.value) return;
+      $('upnote').textContent = 'reading the clip…';
+      try{
+        const r = await api('/local/pick', {method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({path: sel.value})});
+        const j2 = await r.json();
+        if(j2.error) throw new Error(j2.error);
+        await useClip(j2);
+      }catch(err){ $('upnote').innerHTML = `<span class="err">${err.message}</span>`; }
+    };
+  }catch(e){ /* server without local files; the upload box still works */ }
+})();
 
 function step(n){ for(let i=1;i<=4;i++) $('s'+i).classList.toggle('on', i<=n); }
 
@@ -276,8 +309,16 @@ $('file').onchange = async e => {
   $('bar').style.width = '0%'; $('barwrap').hidden = false;
   showFrame(); $('result').style.display='none';
   try{
-    up = await uploadFile(f);
-    const j = up;
+    await useClip(await uploadFile(f));
+  }catch(err){
+    $('barwrap').hidden = true;
+    $('upnote').innerHTML = `<span class="err">${err.message}</span>`;
+  }
+};
+
+async function useClip(j){
+  up = j;
+  {
     $('shot').onload = () => { draw(); };
     $('shot').src = await blobURL(`/frame?id=${encodeURIComponent(j.id)}&t=0`);
     $('upnote').textContent = `${j.w}×${j.h}, ${j.dur}s`;
@@ -307,11 +348,8 @@ $('file').onchange = async e => {
     if(!(j.dishes||[]).length) bb.innerHTML =
       '<span class="note">none found automatically — drag on the frame instead</span>';
     step(2);
-  }catch(err){
-    $('barwrap').hidden = true;
-    $('upnote').innerHTML = `<span class="err">${err.message}</span>`;
   }
-};
+}
 
 // ---- drag a dish by hand ----
 function at(e){
