@@ -84,6 +84,30 @@ def _accept_step(diff, thr, mpp, max_width_mm, min_mm, max_mm=None):
     return out
 
 
+WALL_SPEED_MM_S = 1.5            # ordinary crawling pace, for inferring wall runs
+
+def arc_bridge(a, b, centre, r, mpp, rim_frac=0.80):
+    """Distance a larva covered while lost against the dish wall.
+
+    Larvae wall-follow, and while pressed to the side the trail washes out against
+    the rim - the animal vanishes at one point on the wall and turns up at another.
+    A straight line between them cuts across the dish, which is not where it went.
+    If both ends sit out near the wall, it went round, so measure the arc.
+
+    Returns the arc in mm, or None when either end is well inside the dish - there
+    the animal could have gone anywhere and a guess would be an invention.
+    """
+    ax, ay = a[0] - centre[0], a[1] - centre[1]
+    bx, by = b[0] - centre[0], b[1] - centre[1]
+    ra, rb = math.hypot(ax, ay), math.hypot(bx, by)
+    if ra < rim_frac * r or rb < rim_frac * r:
+        return None
+    ang = abs(math.atan2(ay, ax) - math.atan2(by, bx))
+    if ang > math.pi:
+        ang = 2 * math.pi - ang
+    return ang * (0.5 * (ra + rb)) * mpp
+
+
 def measure(video, dish_mm, circle, every=5.0, edge=0.94, max_width_mm=2.5,
             threshold=None, log=print):
     """Total trail length in mm for one dish.
@@ -166,11 +190,50 @@ def measure(video, dish_mm, circle, every=5.0, edge=0.94, max_width_mm=2.5,
     thr = threshold if threshold is not None else base
     trail_mask = build(thr)
 
-    total, width = ribbon_mm(trail_mask, mpp)
-    log(f"{total:.1f} mm of trail at threshold {thr} ({len(diffs)} increments)")
-    return {"totalMm": round(total, 1), "threshold": thr, "mmPerPx": round(mpp, 5),
+    seen, width = ribbon_mm(trail_mask, mpp)
+
+    # Where was it, increment by increment? Only to find the wall gaps - the
+    # measurement itself is still the painted trail, not a track.
+    steps = [_accept_step(d, thr, mpp, max_width_mm, min_mm, max_mm) for d in diffs]
+    where = []
+    for sm in steps:
+        # The biggest accepted piece, not the mean of all of them: averaging over
+        # several pieces puts the "position" somewhere the larva never was, and a
+        # wall arc drawn between two such points is fiction.
+        n_, lab_, st_, cen_ = cv2.connectedComponentsWithStats((sm > 0).astype(np.uint8), 8)
+        if n_ < 2:
+            where.append(None)
+            continue
+        k = 1 + int(np.argmax(st_[1:, cv2.CC_STAT_AREA]))
+        where.append((float(cen_[k][0]), float(cen_[k][1])))
+    centre = (cx - ox, cy - oy)
+    bridged, arcs = 0.0, []
+    last_i = None
+    for i, p in enumerate(where):
+        if p is None:
+            continue
+        if last_i is not None and i - last_i > 1:
+            arc = arc_bridge(where[last_i], p, centre, r, mpp)
+            # Crawling pace, not the sprint ceiling: a wall gap is inferred, so it
+            # should not be allowed to contribute more than an ordinary larva
+            # could have walked in that time. And a gap longer than half a minute
+            # is not a wall run, it is simply a loss.
+            gap_s = (i - last_i) * every
+            if (arc is not None and gap_s <= 30.0
+                    and arc <= WALL_SPEED_MM_S * gap_s):
+                bridged += arc
+                arcs.append({"fromSec": round(last_i * every), "toSec": round(i * every),
+                             "mm": round(arc, 1)})
+        last_i = i
+    total = seen + bridged
+    log(f"{total:.1f} mm ({seen:.1f} seen + {bridged:.1f} along the wall) "
+        f"at threshold {thr}")
+    return {"totalMm": round(total, 1), "seenMm": round(seen, 1),
+            "wallMm": round(bridged, 1), "arcs": arcs,
+            "threshold": thr, "mmPerPx": round(mpp, 5),
             "widthMm": round(width, 2), "frames": len(grabs),
-            "trail": trail_mask, "origin": (ox, oy), "mask": mask}
+            "trail": trail_mask, "origin": (ox, oy), "mask": mask,
+            "where": where, "centre": centre, "radius": r, "every": every}
 
 
 def replay(video, dish_mm, circle, out, every=5.0, edge=0.94, max_width_mm=2.5,
@@ -221,11 +284,37 @@ def replay(video, dish_mm, circle, out, every=5.0, edge=0.94, max_width_mm=2.5,
                                  _accept_step(d, thr, mpp, max_width_mm, 0.8))
         prev = g
         total, _w = ribbon_mm(trail_mask, mpp)
+        total += sum(a["mm"] for a in m["arcs"] if a["toSec"] <= t)
         im = cv2.resize(cur, (size, size))
         paint = cv2.resize(trail_mask, (size, size), interpolation=cv2.INTER_NEAREST)
         im[paint > 0] = (0.2 * im[paint > 0] + 0.8 * np.array([60, 60, 255])).astype(np.uint8)
-        cv2.putText(im, f"trail {total:6.1f} mm", (12, 30), cv2.FONT_HERSHEY_SIMPLEX,
+        # Wall runs are inferred, not seen, so they are drawn as a dashed amber
+        # arc - never the same red as the trail the camera actually recorded.
+        for a in m["arcs"]:
+            if a["toSec"] > t:
+                continue
+            i0, i1 = int(a["fromSec"] / every), int(a["toSec"] / every)
+            p0, p1 = m["where"][i0], m["where"][i1]
+            if not p0 or not p1:
+                continue
+            c0 = m["centre"]
+            a0 = math.atan2(p0[1] - c0[1], p0[0] - c0[0])
+            a1 = math.atan2(p1[1] - c0[1], p1[0] - c0[0])
+            d = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi
+            rr = 0.5 * (math.hypot(p0[0] - c0[0], p0[1] - c0[1])
+                        + math.hypot(p1[0] - c0[0], p1[1] - c0[1]))
+            for u in np.arange(0, 1.0, 0.04):
+                if int(u * 25) % 2:
+                    continue
+                ang = a0 + d * u
+                px = (c0[0] + rr * math.cos(ang)) * size / mask.shape[1]
+                py = (c0[1] + rr * math.sin(ang)) * size / mask.shape[0]
+                cv2.circle(im, (int(px), int(py)), 3, (60, 190, 255), -1, cv2.LINE_AA)
+        cv2.putText(im, f"path {total:6.1f} mm", (12, 30), cv2.FONT_HERSHEY_SIMPLEX,
                     .7, (60, 60, 255), 2, cv2.LINE_AA)
+        if m["wallMm"]:
+            cv2.putText(im, f"amber = inferred along the wall", (12, size - 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, .5, (60, 190, 255), 1, cv2.LINE_AA)
         cv2.putText(im, f"{t:5.0f}s", (size - 96, 30), cv2.FONT_HERSHEY_SIMPLEX, .7,
                     (255, 255, 255), 2, cv2.LINE_AA)
         proc.stdin.write(im.tobytes())
