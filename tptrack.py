@@ -47,10 +47,47 @@ def _sample(video, circle, every=EVERY_S):
         ok, f = cap.read()
         if not ok:
             break
-        frames.append(cv2.cvtColor(f[oy:oy + side, ox:ox + side], cv2.COLOR_BGR2GRAY))
+        frames.append(_crop(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), ox, oy, side))
         t += every
     cap.release()
     return frames, fps
+
+
+def _crop(g, ox, oy, side):
+    """Square crop that may hang off the frame - a dish can sit against the edge.
+    Missing rows and columns are filled with the border, so the dish centre stays
+    at (r, r) and every radius in the rest of the module keeps its meaning.
+    """
+    h, w = g.shape[:2]
+    x0, y0 = max(0, ox), max(0, oy)
+    x1, y1 = min(w, ox + side), min(h, oy + side)
+    out = g[y0:y1, x0:x1]
+    top, left = y0 - oy, x0 - ox
+    bottom, right = side - (y1 - oy), side - (x1 - ox)
+    if top or left or bottom or right:
+        out = cv2.copyMakeBorder(out, top, bottom, left, right, cv2.BORDER_REPLICATE)
+    return out
+
+
+def stabilise(frames):
+    """Undo camera drift, for clips shot without a tripod.
+
+    The median background only removes the agar if the agar stays put.  A phone
+    that shifts 70px over five minutes makes the whole dish register as motion,
+    and the larva is lost in it.  Phase correlation gives the global shift per
+    frame against the first; rolling each frame back makes the dish static again.
+
+    Off by default: a rock-steady clip gains nothing, and an estimator run on one
+    would only add its own jitter.
+    """
+    ref = np.float32(frames[0])
+    out = [frames[0]]
+    for f in frames[1:]:
+        (dx, dy), _ = cv2.phaseCorrelate(ref, np.float32(f))
+        M = np.float32([[1, 0, -dx], [0, 1, -dy]])
+        out.append(cv2.warpAffine(f, M, (f.shape[1], f.shape[0]),
+                                  borderMode=cv2.BORDER_REPLICATE))
+    return out
 
 
 def _moving(frames):
@@ -59,7 +96,8 @@ def _moving(frames):
     return [cv2.absdiff(f, bg) for f in frames]
 
 
-def trajectories(video, circle, every=EVERY_S, mm_per_px=None, log=print):
+def trajectories(video, circle, every=EVERY_S, mm_per_px=None, log=print,
+                 steady=False):
     """Linked trajectories, as a list of (times_s, xy_px) arrays, longest first."""
     import trackpy as tp
     tp.quiet()
@@ -69,6 +107,9 @@ def trajectories(video, circle, every=EVERY_S, mm_per_px=None, log=print):
         raise SystemExit("no frames read from %s" % video)
     log("%d frames at %.1fs spacing" % (len(frames), every))
 
+    if steady:
+        frames = stabilise(frames)
+        log("stabilised against camera drift")
     diffs = _moving(frames)
     # Two passes: the first learns what a bright feature looks like in this dish,
     # so the mass cut adapts to the lighting instead of being a magic number.
@@ -179,7 +220,7 @@ def chain(trs, circle, mpp):
     return seen, bridged, segs
 
 
-def measure(video, dish_mm, circle, every=EVERY_S, log=print):
+def measure(video, dish_mm, circle, every=EVERY_S, log=print, steady=False):
     """Path length in mm.
 
     Reports the longest single trajectory as the headline figure, because that
@@ -190,7 +231,7 @@ def measure(video, dish_mm, circle, every=EVERY_S, log=print):
     the gap to it is short enough to attribute (see MAX_GAP_S).
     """
     mpp = dish_mm / (2.0 * circle[2])
-    trs = trajectories(video, circle, every, mpp, log)
+    trs = trajectories(video, circle, every, mpp, log, steady)
     if not trs:
         log("no trajectories found")
         return 0.0, 0.0, 0.0
@@ -213,7 +254,35 @@ def measure(video, dish_mm, circle, every=EVERY_S, log=print):
     return total, seen, bridged
 
 
-def overlay(video, circle, out, every=EVERY_S, mm_per_px=None):
+def measure_each(video, dish_mm, circle, larvae, every=EVERY_S, log=print,
+                 steady=False):
+    """Path length per animal, for a dish holding more than one.
+
+    No attribution across gaps here.  With several larvae in the dish a gap is
+    just as likely to be one animal ending as another beginning, and joining
+    them reports two creatures' walks as one.  Each surviving trajectory is
+    reported on its own; the `larvae` count is what to expect, not a target to
+    pad up to - a sitter that barely moves may not clear MIN_DETECTIONS at all.
+    """
+    mpp = dish_mm / (2.0 * circle[2])
+    # No _drop_overlaps here: it exists to throw away a second trajectory that
+    # runs at the same time as the real one, which is right for a solo dish and
+    # exactly wrong here - several larvae crawl simultaneously by definition.
+    kept = trajectories(video, circle, every, mpp, log, steady)
+    rows = [(float(np.hypot(*np.diff(xy, axis=0).T).sum()) * mpp, t[0], t[-1])
+            for t, xy in kept]
+    rows.sort(reverse=True)
+    log("expected %d larvae, %d trajectory(ies) survived:" % (larvae, len(rows)))
+    for i, (mm, t0, t1) in enumerate(rows[:larvae], 1):
+        log("  larva %d: %6.1f mm   %5.1fs-%5.1fs" % (i, mm, t0, t1))
+    if len(rows) > larvae:
+        log("  (%d shorter trajectory(ies) below the top %d, not listed)"
+            % (len(rows) - larvae, larvae))
+    return [r[0] for r in rows[:larvae]]
+
+
+def overlay(video, circle, out, every=EVERY_S, mm_per_px=None, larvae=1,
+            steady=False):
     """First frame with every kept trajectory drawn, so the path can be eyeballed."""
     cx, cy, r = circle
     cap = cv2.VideoCapture(video)
@@ -221,17 +290,32 @@ def overlay(video, circle, out, every=EVERY_S, mm_per_px=None):
     cap.release()
     if not ok:
         return
-    img = f[int(cy - r):int(cy + r), int(cx - r):int(cx + r)].copy()
-    kept = _drop_overlaps(trajectories(video, circle, every, mm_per_px,
-                                       log=lambda *a: None))
+    img = cv2.merge([_crop(c, int(cx - r), int(cy - r), int(2 * r))
+                     for c in cv2.split(f)])
+    kept = trajectories(video, circle, every, mm_per_px, log=lambda *a: None,
+                        steady=steady)
+    if larvae == 1:
+        kept = _drop_overlaps(kept)
     if not kept:
         cv2.imwrite(out, img)
         return
-    _, lo, hi = _attribute(kept)
+    if larvae > 1:
+        # Each animal gets its own colour; no attribution across gaps.
+        order = sorted(range(len(kept)), key=lambda k: -len(kept[k][0]))[:larvae]
+        lo, hi, top = None, None, set(order)
+    else:
+        _, lo, hi = _attribute(kept)
+        top = None
     for i, (_, xy) in enumerate(kept):
-        measured = lo <= i <= hi
+        measured = (i in top) if top is not None else (lo <= i <= hi)
         # red is the path that was measured; grey is a fragment left out of it
-        col = (0, 0, 255) if measured else (150, 150, 150)
+        if not measured:
+            col = (150, 150, 150)
+        elif top is not None:
+            col = [(0, 0, 255), (0, 200, 255), (0, 255, 0),
+                   (255, 0, 255), (255, 200, 0)][order.index(i) % 5]
+        else:
+            col = (0, 0, 255)
         cv2.polylines(img, [xy.astype(np.int32)], False, col, 2 if measured else 1)
     cv2.imwrite(out, img)
 
@@ -292,6 +376,18 @@ def self_check():
            (np.array([4.0]), np.array([[580.0, 300.0]]))]
     assert chain(far, centre, mpp)[1] <= trail.WALL_SPEED_MM_S * 4.0 + 1e-9
 
+    # Stabilising a deliberately drifted clip must put it back where it started.
+    base = np.zeros((80, 80), np.uint8)
+    base[30:38, 30:50] = 200          # a bar to lock onto
+    drifted = [base] + [np.roll(base, (dy, dx), (0, 1))
+                        for dx, dy in ((3, 2), (7, -4), (-5, 6))]
+    fixed = stabilise(drifted)
+    for f in fixed[1:]:
+        assert abs(int(f.sum()) - int(base.sum())) < base.sum() * 0.05
+        ys, xs = np.nonzero(f > 100)
+        assert abs(ys.mean() - 33.5) < 1.5 and abs(xs.mean() - 39.5) < 1.5, \
+            (ys.mean(), xs.mean())
+
     print("self-check ok (wall gap within %.1f%%, mid-dish chord is a lower bound)"
           % (err * 100))
 
@@ -303,8 +399,14 @@ if __name__ == "__main__":
     video = sys.argv[1]
     dish = float(sys.argv[sys.argv.index("--dish-mm") + 1])
     circle = tuple(float(v) for v in sys.argv[sys.argv.index("--circle") + 1].split(","))
-    measure(video, dish, circle)
+    n = int(sys.argv[sys.argv.index("--larvae") + 1]) if "--larvae" in sys.argv else 1
+    steady = "--stabilise" in sys.argv
+    if n > 1:
+        measure_each(video, dish, circle, n, steady=steady)
+    else:
+        measure(video, dish, circle, steady=steady)
     if "--overlay" in sys.argv:
         o = sys.argv[sys.argv.index("--overlay") + 1]
-        overlay(video, circle, o, mm_per_px=dish / (2.0 * circle[2]))
+        overlay(video, circle, o, mm_per_px=dish / (2.0 * circle[2]), larvae=n,
+                steady=steady)
         print("wrote", o)
