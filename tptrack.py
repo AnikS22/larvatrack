@@ -16,7 +16,10 @@ gaps: round the wall when the animal vanished against it, straight otherwise.
 Needs trackpy, which is not in the main environment - use .venv-track/bin/python.
 """
 import math
+import shutil
+import subprocess
 import sys
+import time
 
 import cv2
 import numpy as np
@@ -320,6 +323,80 @@ def overlay(video, circle, out, every=EVERY_S, mm_per_px=None, larvae=1,
     cv2.imwrite(out, img)
 
 
+def replay(video, dish_mm, circle, out, every=EVERY_S, larvae=1, steady=False,
+           size=720, log=print):
+    """Write the clip back out with each path drawn in as it is walked.
+
+    Same trajectories the measurement uses - this is the measurement being shown,
+    not a second guess at it, so what is on screen is what got counted.
+    """
+    mpp = dish_mm / (2.0 * circle[2])
+    kept = trajectories(video, circle, every, mpp, log, steady)
+    if not kept:
+        raise SystemExit("no trajectories to replay")
+    if larvae == 1:
+        kept = _drop_overlaps(kept)
+        group, lo, hi = _attribute(kept)
+        shown = list(range(lo, hi + 1))
+    else:
+        shown = sorted(range(len(kept)), key=lambda k: -len(kept[k][0]))[:larvae]
+    cols = [(0, 0, 255), (0, 200, 255), (0, 255, 0), (255, 0, 255), (255, 200, 0)]
+
+    cx, cy, r = circle
+    side = int(2 * r)
+    scale = size / float(side)
+    # Every sampled instant, so a path grows in step with the frame it belongs to.
+    stamps = sorted({float(t) for k in shown for t in kept[k][0]})
+    if not stamps:
+        raise SystemExit("no timestamps to replay")
+
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise SystemExit("ffmpeg is needed to write the replay")
+    proc = subprocess.Popen(
+        [ff, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+         "-s", "%dx%d" % (size, size), "-r", "8", "-i", "-", "-c:v", "libx264",
+         "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+         "-movflags", "+faststart", out],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    cap = cv2.VideoCapture(video)
+    try:
+        for now in stamps:
+            cap.set(cv2.CAP_PROP_POS_MSEC, now * 1000.0)
+            ok, f = cap.read()
+            if not ok:
+                break
+            img = cv2.merge([_crop(c, int(cx - r), int(cy - r), side)
+                             for c in cv2.split(f)])
+            img = cv2.resize(img, (size, size))
+            walked = 0.0
+            for n, k in enumerate(shown):
+                t, xy = kept[k]
+                upto = xy[t <= now]
+                if len(upto) < 2:
+                    continue
+                col = cols[n % len(cols)] if larvae > 1 else (0, 0, 255)
+                cv2.polylines(img, [(upto * scale).astype(np.int32)], False, col, 2)
+                cv2.circle(img, tuple((upto[-1] * scale).astype(int)), 5, col, -1)
+                walked += float(np.hypot(*np.diff(upto, axis=0).T).sum()) * mpp
+            # With several larvae the running figure is their sum, which reads
+            # as one animal's distance unless it says so.
+            cap_txt = ("%5.1fs   %.1f mm total of %d" % (now, walked, len(shown))
+                       if larvae > 1 else "%5.1fs   %.1f mm" % (now, walked))
+            cv2.putText(img, cap_txt, (12, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 230, 255), 2)
+            proc.stdin.write(img.tobytes())
+    finally:
+        cap.release()
+        proc.stdin.close()
+        if proc.wait() != 0:
+            raise SystemExit("ffmpeg failed: "
+                             + proc.stderr.read().decode()[-300:])
+    log("wrote %s (%d frames)" % (out, len(stamps)))
+    return out
+
+
 def self_check():
     """A synthetic larva on a known path, broken into fragments the way the real
     detector breaks.  A gap against the wall is bridged round it and should come
@@ -409,4 +486,11 @@ if __name__ == "__main__":
         o = sys.argv[sys.argv.index("--overlay") + 1]
         overlay(video, circle, o, mm_per_px=dish / (2.0 * circle[2]), larvae=n,
                 steady=steady)
+    if "--replay" in sys.argv:
+        i = sys.argv.index("--replay") + 1
+        # Timestamped by default: overwriting a file QuickTime still has open is
+        # what made earlier replays look corrupted.
+        o = sys.argv[i] if i < len(sys.argv) and not sys.argv[i].startswith("-") \
+            else "replay_%s.mp4" % time.strftime("%H%M%S")
+        replay(video, dish, circle, o, larvae=n, steady=steady)
         print("wrote", o)
