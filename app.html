@@ -80,6 +80,12 @@ a{color:var(--accent)}
           <canvas id="ov"></canvas>
         </div>
         <video id="rep" controls loop playsinline hidden></video>
+        <div id="followwrap" hidden style="position:relative;line-height:0">
+          <video id="follow" playsinline muted
+                 style="display:block;width:100%;cursor:crosshair"></video>
+          <canvas id="fov" style="position:absolute;inset:0;width:100%;height:100%;
+                  pointer-events:none"></canvas>
+        </div>
       </div>
       <p class="note" id="stagenote">Pick a video file to begin.</p>
     </div>
@@ -119,6 +125,18 @@ a{color:var(--accent)}
             <label style="margin:0">Which larva are you following?</label>
             <div class="dishbtns" id="larvabtns"></div>
           </div>
+          <button id="followbtn" type="button" style="margin-top:10px">
+            Follow with the mouse</button>
+          <label style="margin-top:9px">Speed
+            <select id="rate">
+              <option value="2">2×</option>
+              <option value="4" selected>4×</option>
+              <option value="6">6×</option>
+              <option value="8">8×</option>
+              <option value="10">10×</option>
+            </select></label>
+          <p class="note" id="follownote" style="margin:0">Hold the pointer on one
+            larva while it plays. Space pauses.</p>
           <div style="display:flex;gap:7px;margin-top:9px">
             <button class="ghost" id="stepback" type="button">◀ 2s</button>
             <button class="ghost" id="stepfwd" type="button">2s ▶</button>
@@ -207,6 +225,8 @@ health();
     if(q.get('cx') && q.get('r')){
       setCircle({cx:+q.get('cx'), cy:+q.get('cy'), r:+q.get('r')}, 'from the link');
     }
+    if(q.get('larvae')){ nLarvae = Math.max(1, Math.min(5, +q.get('larvae'))); }
+    if(q.get('hand') === '1'){ setManual(true); seek(0); }
     if(q.get('label')) document.title = q.get('label') + ' — larvatrack';
     if(q.get('label')) $('who').textContent = q.get('label');
     if(q.get('auto') === '1' && circle) $('go').click();
@@ -244,8 +264,12 @@ health();
 function step(n){ for(let i=1;i<=4;i++) $('s'+i).classList.toggle('on', i<=n); }
 
 // The frame and the replay share the stage; exactly one of them is up.
-function showFrame(){ $('framewrap').hidden = false; $('rep').hidden = true; }
-function showReplay(){ $('framewrap').hidden = true;  $('rep').hidden = false; }
+function showFrame(){ $('framewrap').hidden = false; $('rep').hidden = true;
+                     $('followwrap').hidden = true; }
+function showReplay(){ $('framewrap').hidden = true;  $('rep').hidden = false;
+                      $('followwrap').hidden = true; }
+function showFollow(){ $('framewrap').hidden = true;  $('rep').hidden = true;
+                      $('followwrap').hidden = false; }
 
 function draw(){
   const c=$('ov'), img=$('shot');
@@ -475,6 +499,99 @@ const step2 = d => {
   const t = Math.max(0, Math.min(+$('scrub').max, scrubT + d));
   $('scrub').value = String(t); seek(t);
 };
+// ---- follow a larva with the pointer while the clip plays ----
+// Clicking 150 frames per animal is the real cost of hand tracing. Playing the
+// dish back fast and keeping the pointer on one larva collects the same path in
+// the time the clip takes to run, and the pointer is already where the eye is.
+let following = false, fpts = [], fraf = 0, lastT = -1;
+
+async function loadFollow(){
+  if($('follow').src) return;
+  $('follownote').textContent = 'preparing the clip (a few seconds)…';
+  const u = `/clip?id=${encodeURIComponent(up.id)}&cx=${Math.round(circle.cx)}`
+          + `&cy=${Math.round(circle.cy)}&r=${Math.round(circle.r)}`;
+  $('follow').src = await blobURL(u);
+  $('follownote').textContent = 'Hold the pointer on one larva while it plays. Space pauses.';
+}
+
+function fdraw(){
+  const c = $('fov'), v = $('follow');
+  if(!v.videoWidth) return;
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  const g = c.getContext('2d');
+  g.clearRect(0,0,c.width,c.height);
+  if(fpts.length > 1){
+    g.strokeStyle = LCOL[(curLarva-1)%LCOL.length];
+    g.lineWidth = Math.max(2, c.width/300);
+    g.beginPath(); g.moveTo(fpts[0].x, fpts[0].y);
+    fpts.slice(1).forEach(p => g.lineTo(p.x, p.y));
+    g.stroke();
+    const last = fpts[fpts.length-1];
+    g.beginPath(); g.arc(last.x, last.y, Math.max(5,c.width/120), 0, 7); g.stroke();
+  }
+}
+
+function fsample(){
+  const v = $('follow');
+  if(following && !v.paused && !v.ended){
+    // Sampled against VIDEO time, so the path does not depend on playback speed
+    // or on how smoothly the browser happens to be rendering.
+    if(v.currentTime - lastT >= 0.4 && window._fm){
+      fpts.push({t: v.currentTime, x: window._fm.x, y: window._fm.y});
+      lastT = v.currentTime;
+      fdraw(); updateFollowTotal();
+    }
+  }
+  fraf = requestAnimationFrame(fsample);
+}
+
+function updateFollowTotal(){
+  const mpp = (+$('dish').value || 100) / (2*circle.r);
+  let mm = 0;
+  for(let i=1;i<fpts.length;i++)
+    mm += Math.hypot(fpts[i].x-fpts[i-1].x, fpts[i].y-fpts[i-1].y) * mpp;
+  $('follownote').innerHTML = `larva ${curLarva}: <b style="color:var(--good)">`
+    + `${mm.toFixed(1)} mm</b> — ${fpts.length} points, `
+    + `${$('follow').currentTime.toFixed(0)}s of ${($('follow').duration||0).toFixed(0)}s`;
+}
+
+$('follow').addEventListener('pointermove', e => {
+  const b = e.target.getBoundingClientRect();
+  window._fm = {x: (e.clientX-b.left)*e.target.videoWidth/b.width,
+                y: (e.clientY-b.top)*e.target.videoHeight/b.height};
+});
+
+$('followbtn').onclick = async () => {
+  if(!circle){ $('dishnote').textContent = 'set the dish first'; return; }
+  if(!manual) setManual(true);
+  if(following){                       // stop and keep what was followed
+    following = false;
+    $('follow').pause();
+    $('followbtn').textContent = 'Follow with the mouse';
+    pins = pins.filter(p => (p.larva||1) !== curLarva)
+               .concat(fpts.map(p => ({t:p.t, x:p.x, y:p.y, larva:curLarva})));
+    renderPins(); showFrame(); draw();
+    return;
+  }
+  await loadFollow();
+  showFollow();
+  fpts = []; lastT = -1; following = true;
+  const v = $('follow');
+  v.currentTime = 0; v.playbackRate = +$('rate').value;
+  v.play();
+  $('followbtn').textContent = 'Stop and keep this larva';
+  cancelAnimationFrame(fraf); fsample();
+  v.onended = () => { if(following) $('followbtn').click(); };
+};
+
+$('rate').onchange = () => { $('follow').playbackRate = +$('rate').value; };
+addEventListener('keydown', e => {
+  if(e.code !== 'Space' || !following) return;
+  e.preventDefault();
+  const v = $('follow');
+  v.paused ? v.play() : v.pause();
+});
+
 $('stepback').onclick = () => step2(-2);
 $('stepfwd').onclick  = () => step2(2);
 

@@ -13,6 +13,8 @@ import html
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -280,6 +282,40 @@ class Handler(BaseHTTPRequestHandler):
                 with QUEUE_CV:
                     out["ahead"] = QUEUE.index(one("id")) if one("id") in QUEUE else 0
             return self.send(200, out)
+        if u.path == "/clip":
+            # The dish on its own, to be played and followed with the mouse.
+            # Cached: cropping a 5-minute clip takes a few seconds and the same
+            # plate gets re-watched once per animal.
+            src = self._upload(one("id"))
+            if src is None:
+                return self.fail(404, "unknown upload")
+            try:
+                cx, cy, r = (int(float(one(k, "0"))) for k in ("cx", "cy", "r"))
+            except ValueError:
+                return self.fail(400, "bad circle")
+            tag = "clip_%s_%d_%d_%d.mp4" % (
+                re.sub(r"[^A-Za-z0-9]", "", os.path.basename(src))[-24:], cx, cy, r)
+            path = os.path.join(REPLAYS, tag)
+            if not os.path.isfile(path):
+                ff = shutil.which("ffmpeg")
+                if not ff:
+                    return self.fail(500, "ffmpeg is needed to crop the clip")
+                side = 2 * r
+                # Negative offsets are legal here: pad rather than refuse, so a
+                # plate against the frame edge still plays centred.
+                vf = ("pad=iw+%d:ih+%d:%d:%d:gray,crop=%d:%d:%d:%d"
+                      % (2 * side, 2 * side, side, side,
+                         side, side, cx - r + side, cy - r + side))
+                subprocess.run([ff, "-y", "-v", "error", "-i", src, "-vf", vf,
+                                "-c:v", "libx264", "-preset", "veryfast",
+                                "-crf", "26", "-an", "-movflags", "+faststart",
+                                path], check=False)
+            if not os.path.isfile(path):
+                return self.fail(500, "could not crop that clip")
+            data = open(path, "rb").read()
+            return self.send(200, data, "video/mp4",
+                             {"Accept-Ranges": "none"})
+
         if u.path == "/replay":
             p = os.path.join(REPLAYS, os.path.basename(one("id") or "") + ".mp4")
             if not os.path.isfile(p):
