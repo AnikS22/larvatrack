@@ -44,6 +44,8 @@ video{display:block;width:100%;border-radius:10px;background:#000}
   white-space:pre-wrap;max-height:190px;overflow:auto;background:var(--sunk);
   border:1px solid var(--line);border-radius:8px;padding:9px;margin-top:11px}
 .err{color:var(--bad)}
+#barwrap{height:6px;background:var(--sunk);border-radius:99px;overflow:hidden;margin-top:9px}
+#bar{height:100%;width:0;background:var(--accent);transition:width .25s}
 a{color:var(--accent)}
 </style>
 
@@ -79,6 +81,7 @@ a{color:var(--accent)}
         <fieldset>
           <legend>1 — clip</legend>
           <label>Video file<input type="file" id="file" accept="video/*"></label>
+          <div id="barwrap" hidden><div id="bar"></div></div>
           <p class="note" id="upnote">MP4 or MOV, straight off the phone.</p>
         </fieldset>
 
@@ -172,19 +175,55 @@ function setCircle(c, how){
 }
 
 // ---- upload ----
+// In pieces, not one long request. A phone clip is hundreds of MB and takes
+// minutes over a home connection; sent whole, one network hiccup kills the lot
+// with no way back ("Load failed"). Each chunk is small enough to retry, and
+// carries its own offset so a re-send overwrites rather than duplicates.
+const CHUNK = 4 * 1024 * 1024;
+
+async function sendChunk(id, blob, offset, tries=4){
+  for(let a=1; a<=tries; a++){
+    try{
+      const r = await api(`/upload/chunk?id=${encodeURIComponent(id)}&offset=${offset}`,
+                          {method:'POST', body:blob});
+      if(r.ok) return;
+      if(r.status === 404) throw new Error('the upload expired — start again');
+    }catch(err){
+      if(a === tries) throw new Error(`upload stalled at ${(offset/1048576).toFixed(0)} MB`);
+    }
+    await new Promise(r => setTimeout(r, 400 * a));   // back off, then retry
+  }
+}
+
+async function uploadFile(f){
+  const started = await (await api('/upload/start',
+    {method:'POST', headers:{'X-Filename': f.name, 'X-Filesize': String(f.size)}})).json();
+  if(started.error) throw new Error(started.error);
+  const mb = (f.size/1048576).toFixed(0);
+  for(let off=0; off<f.size; off+=CHUNK){
+    await sendChunk(started.id, f.slice(off, off+CHUNK), off);
+    const pct = Math.min(100, Math.round(100*(off+CHUNK)/f.size));
+    $('upnote').textContent = `uploading ${mb} MB — ${pct}%`;
+    $('bar').style.width = pct + '%';
+  }
+  $('upnote').textContent = `uploaded ${mb} MB — reading the clip…`;
+  const j = await (await api('/upload/finish?id='+encodeURIComponent(started.id),
+                             {method:'POST'})).json();
+  if(j.error) throw new Error(j.error);
+  return j;
+}
+
 $('file').onchange = async e => {
   const f = e.target.files[0]; if(!f) return;
-  $('upnote').textContent = `uploading ${(f.size/1048576).toFixed(0)} MB…`;
+  $('bar').style.width = '0%'; $('barwrap').hidden = false;
   $('rep').hidden = true; $('shot').hidden = false; $('result').style.display='none';
   try{
-    const r = await api('/upload', {method:'POST', body:f,
-      headers:{'X-Filename': f.name}});
-    const j = await r.json();
-    if(j.error) throw new Error(j.error);
-    up = j;
+    up = await uploadFile(f);
+    const j = up;
     $('shot').onload = () => { draw(); };
     $('shot').src = await blobURL(`/frame?id=${encodeURIComponent(j.id)}&t=0`);
     $('upnote').textContent = `${j.w}×${j.h}, ${j.dur}s`;
+    $('barwrap').hidden = true;
     $('fs2').disabled = false;
     $('stagenote').textContent = 'Drag across the dish to set it, or use a button on the right.';
     const bb = $('dishbtns'); bb.innerHTML='';
@@ -200,7 +239,10 @@ $('file').onchange = async e => {
     if(!(j.dishes||[]).length) bb.innerHTML =
       '<span class="note">none found automatically — drag on the frame instead</span>';
     step(2);
-  }catch(err){ $('upnote').innerHTML = `<span class="err">${err.message}</span>`; }
+  }catch(err){
+    $('barwrap').hidden = true;
+    $('upnote').innerHTML = `<span class="err">${err.message}</span>`;
+  }
 };
 
 // ---- drag a dish by hand ----

@@ -39,6 +39,7 @@ CORS = {"Access-Control-Allow-Origin": "*",
 MAX_UPLOAD = 2 * 1024 ** 3          # 2GB; a 8min 4K clip is well under this
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+EXPECTED = {}                       # upload id -> byte count the client promised
 # ponytail: one worker. The measurement is CPU-bound on every core already, so a
 # second job in parallel finishes both later than running them in turn.
 QUEUE = []
@@ -219,6 +220,72 @@ class Handler(BaseHTTPRequestHandler):
         if n > MAX_UPLOAD:
             return self.fail(413, "that clip is over the %dGB limit"
                              % (MAX_UPLOAD // 1024 ** 3))
+
+        if u.path == "/upload/start":
+            name = self.headers.get("X-Filename") or "clip.mp4"
+            upload_id = safe_id(name)
+            open(os.path.join(UPLOADS, upload_id), "wb").close()
+            try:
+                want = int(self.headers.get("X-Filesize") or 0)
+            except ValueError:
+                want = 0
+            if want > MAX_UPLOAD:
+                return self.fail(413, "that clip is over the %dGB limit"
+                                 % (MAX_UPLOAD // 1024 ** 3))
+            EXPECTED[upload_id] = want
+            return self.send(200, {"id": upload_id})
+
+        if u.path == "/upload/chunk":
+            q = urllib.parse.parse_qs(u.query)
+            upload_id = (q.get("id") or [""])[0]
+            path = os.path.join(UPLOADS, os.path.basename(upload_id))
+            if not upload_id or not os.path.isfile(path):
+                self.rfile.read(n)          # drain, or the connection desyncs
+                return self.fail(404, "unknown upload")
+            # Append at the offset the client claims. Re-sending a chunk that
+            # already landed overwrites the same bytes instead of duplicating
+            # them, so a retry after a dropped connection is safe.
+            try:
+                off = int((q.get("offset") or ["0"])[0])
+            except ValueError:
+                self.rfile.read(n)
+                return self.fail(400, "bad offset")
+            left, buf = n, []
+            while left > 0:
+                chunk = self.rfile.read(min(1 << 20, left))
+                if not chunk:
+                    break
+                buf.append(chunk)
+                left -= len(chunk)
+            with open(path, "r+b") as fh:
+                fh.seek(off)
+                fh.write(b"".join(buf))
+            return self.send(200, {"ok": True, "size": os.path.getsize(path)})
+
+        if u.path == "/upload/finish":
+            q = urllib.parse.parse_qs(u.query)
+            upload_id = (q.get("id") or [""])[0]
+            path = os.path.join(UPLOADS, os.path.basename(upload_id))
+            if not upload_id or not os.path.isfile(path):
+                return self.fail(404, "unknown upload")
+            # A truncated upload still opens: an MP4 carries its duration in a
+            # header, so a quarter of a file reports the full 300s and then gets
+            # silently measured short. Check the bytes all arrived.
+            want = EXPECTED.get(upload_id, 0)
+            got = os.path.getsize(path)
+            if want and got != want:
+                return self.fail(400, "upload is incomplete (%d of %d bytes) - "
+                                      "please try again" % (got, want))
+            try:
+                frame, dur = first_frame(path)
+            except ValueError as e:
+                os.remove(path)
+                return self.fail(400, str(e))
+            EXPECTED.pop(upload_id, None)
+            h, w = frame.shape[:2]
+            return self.send(200, {"id": upload_id, "w": w, "h": h,
+                                   "dur": round(dur, 1),
+                                   "dishes": dishes_in(frame)})
 
         if u.path == "/upload":
             name = self.headers.get("X-Filename") or "clip.mp4"
