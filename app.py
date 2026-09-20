@@ -33,9 +33,14 @@ PORT = 8020
 # The page may be served from Vercel while the work happens here, so the browser
 # calls this server cross-origin. Nothing here is private to a user and there is
 # no session to steal, so any origin may call it.
+# Allow-Headers has to name every custom header the page sends, or the browser
+# blocks the request at the preflight and the page reports the machine as
+# offline having never reached it. Listing them by hand went stale the moment a
+# header was added, so the preflight echoes back whatever was asked for.
 CORS = {"Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type, X-Filename",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS"}
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Max-Age": "86400"}
 MAX_UPLOAD = 2 * 1024 ** 3          # 2GB; a 8min 4K clip is well under this
 JOBS = {}
 JOBS_LOCK = threading.Lock()
@@ -160,7 +165,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send(code, {"error": msg})
 
     def do_OPTIONS(self):
-        self.send(204, b"", "text/plain")
+        # Safari does not accept "*" here, so echo the exact list requested.
+        asked = self.headers.get("Access-Control-Request-Headers")
+        self.send(204, b"", "text/plain",
+                  {"Access-Control-Allow-Headers": asked} if asked else None)
 
     # ---- GET ----------------------------------------------------------
     def do_GET(self):
