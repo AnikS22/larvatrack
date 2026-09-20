@@ -193,9 +193,8 @@ a{color:var(--accent)}
     <div class="fgrp">
       <label>speed
         <select id="rate">
-          <option value="1">1×</option><option value="2">2×</option>
-          <option value="4">4×</option><option value="6">6×</option>
-          <option value="8">8×</option><option value="10" selected>10×</option>
+          <option value="5">5×</option><option value="10">10×</option>
+          <option value="20" selected>20×</option><option value="30">30×</option>
         </select></label>
       <button id="fpause" class="ghost" type="button">Pause</button>
       <button id="fstop" type="button">Stop &amp; keep</button>
@@ -612,17 +611,17 @@ function ftotal(){
     mm += Math.hypot(fpts[i].x-fpts[i-1].x, fpts[i].y-fpts[i-1].y) * mpp;
   const v = $('follow');
   $('ftotal').textContent = `larva ${curLarva}  ${mm.toFixed(1)} mm  `
-    + `${v.currentTime.toFixed(0)}/${(v.duration||0).toFixed(0)}s`;
+    + `${realTime().toFixed(0)}/${realDur().toFixed(0)}s`;
 }
 
 function fsample(){
   const v = $('follow');
   if(following && !v.paused && !v.ended && fmouse
-     && v.currentTime - lastT >= 0.4){
+     && realTime() - lastT >= 0.4){
     // Sampled against VIDEO time, so the path does not depend on playback speed
     // or on how smoothly the browser happens to render.
-    fpts.push({t: v.currentTime, x: fmouse.x, y: fmouse.y});
-    lastT = v.currentTime;
+    fpts.push({t: realTime(), x: fmouse.x, y: fmouse.y});
+    lastT = realTime();
   }
   fdraw(); ftotal();
   fraf = requestAnimationFrame(fsample);
@@ -642,6 +641,7 @@ function armRun(){
   $('fpause').textContent = 'Pause';
   flarvaButtons();
   const done = pins.length ? [...new Set(pins.map(p => p.larva||1))].sort() : [];
+  $('follow').playbackRate = 1;
   fmsgHTML(`<div>Click larva ${curLarva} to start</div>`
     + `<small>then follow it — the clip runs at ${$('rate').value}×`
     + (done.length ? `<br>already started: ${done.join(', ')} (marked on the plate)`
@@ -655,7 +655,7 @@ function countdown(n){
     fmsgHTML('');
     const v = $('follow');
     following = true; fstate = 'running';
-    v.playbackRate = +$('rate').value;
+    v.playbackRate = 1;             // speed is already baked into the file
     v.play().catch(()=>{});
     return;
   }
@@ -672,14 +672,24 @@ function keep(){
   renderPins(); flarvaButtons();
 }
 
+let loadedSpeed = 0;
 async function loadFollow(){
-  if($('follow').src) return;
-  $('ftotal').textContent = 'preparing the clip…';
+  const sp = +$('rate').value;
+  if(loadedSpeed === sp && $('follow').src) return;
+  loadedSpeed = sp;
+  fmsgHTML('<div>preparing the clip…</div>'
+           + '<small>a few seconds, then it is cached</small>');
   const u = `/clip?id=${encodeURIComponent(up.id)}&cx=${Math.round(circle.cx)}`
-          + `&cy=${Math.round(circle.cy)}&r=${Math.round(circle.r)}`;
+          + `&cy=${Math.round(circle.cy)}&r=${Math.round(circle.r)}&speed=${sp}`;
   $('follow').src = await blobURL(u);
   await new Promise(r => $('follow').onloadedmetadata = r);
+  fmsgHTML('');
 }
+
+// The clip was sped up when it was made, so its clock runs fast; multiply back
+// to get the real time a point was seen.
+function realTime(){ return $('follow').currentTime * loadedSpeed; }
+function realDur(){ return ($('follow').duration || 0) * loadedSpeed; }
 
 function atVideo(e){
   const b = e.target.getBoundingClientRect();
@@ -722,7 +732,11 @@ $('fexit').onclick = () => {
   if(following) keep();
   $('fullfollow').hidden = true; showFrame(); draw();
 };
-$('rate').onchange = () => { $('follow').playbackRate = +$('rate').value; };
+$('rate').onchange = async () => {   // a different speed is a different file
+  if(following) keep();
+  await loadFollow();
+  armRun();
+};
 addEventListener('keydown', e => {
   if($('fullfollow').hidden) return;
   if(e.code === 'Space'){ e.preventDefault(); $('fpause').click(); }

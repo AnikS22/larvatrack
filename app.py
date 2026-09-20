@@ -293,8 +293,13 @@ class Handler(BaseHTTPRequestHandler):
                 cx, cy, r = (int(float(one(k, "0"))) for k in ("cx", "cy", "r"))
             except ValueError:
                 return self.fail(400, "bad circle")
-            tag = "clip_%s_%d_%d_%d.mp4" % (
-                re.sub(r"[^A-Za-z0-9]", "", os.path.basename(src))[-24:], cx, cy, r)
+            try:
+                speed = max(1.0, min(40.0, float(one("speed", "1"))))
+            except ValueError:
+                speed = 1.0
+            tag = "clip_%s_%d_%d_%d_x%g.mp4" % (
+                re.sub(r"[^A-Za-z0-9]", "", os.path.basename(src))[-24:],
+                cx, cy, r, speed)
             path = os.path.join(REPLAYS, tag)
             if not os.path.isfile(path):
                 ff = shutil.which("ffmpeg")
@@ -306,10 +311,23 @@ class Handler(BaseHTTPRequestHandler):
                 vf = ("pad=iw+%d:ih+%d:%d:%d:gray,crop=%d:%d:%d:%d"
                       % (2 * side, 2 * side, side, side,
                          side, side, cx - r + side, cy - r + side))
-                subprocess.run([ff, "-y", "-v", "error", "-i", src, "-vf", vf,
-                                "-c:v", "libx264", "-preset", "veryfast",
-                                "-crf", "26", "-an", "-movflags", "+faststart",
-                                path], check=False)
+                # Speed is baked in rather than left to the browser. Asking a
+                # video element for playbackRate 10 makes it drop frames it
+                # cannot decode in time, and the plate visibly jumps - which is
+                # exactly what you cannot follow with a pointer. setpts rewrites
+                # the timestamps, so the result plays at 1x, every frame shown.
+                if speed > 1.0:
+                    vf += ",setpts=PTS/%g" % speed
+                cmd = [ff, "-y", "-v", "error", "-i", src, "-vf", vf,
+                       "-an", "-c:v", "libx264", "-preset", "veryfast",
+                       "-crf", "26"]
+                if speed > 1.0:
+                    cmd += ["-r", "30"]     # constant rate, so it plays smooth
+                cmd += ["-movflags", "+faststart", path]
+                r_ = subprocess.run(cmd, capture_output=True)
+                if r_.returncode != 0:
+                    log_err = r_.stderr.decode()[-300:]
+                    sys.stderr.write("ffmpeg: %s\n" % log_err)
             if not os.path.isfile(path):
                 return self.fail(500, "could not crop that clip")
             data = open(path, "rb").read()
