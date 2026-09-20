@@ -84,7 +84,7 @@ def _accept_step(diff, thr, mpp, max_width_mm, min_mm, max_mm=None):
     return out
 
 
-def measure(video, dish_mm, circle, every=5.0, edge=0.88, max_width_mm=2.5,
+def measure(video, dish_mm, circle, every=5.0, edge=0.94, max_width_mm=2.5,
             threshold=None, log=print):
     """Total trail length in mm for one dish.
 
@@ -137,10 +137,28 @@ def measure(video, dish_mm, circle, every=5.0, edge=0.88, max_width_mm=2.5,
     max_mm = lt.D["max_speed"] * every
 
     def build(thr):
+        steps = [_accept_step(d, thr, mpp, max_width_mm, min_mm, max_mm) for d in diffs]
+        # A crawling larva leaves a CHAIN: where it was this step, it was nearby
+        # the step before or after. A speck of noise appears once and never again.
+        # Requiring a neighbour in time removes the scatter without touching the
+        # trail, and needs no extra threshold.
+        reach_px = int((lt.D["max_speed"] * every / mpp) * 1.6) | 1
+        ker = np.ones((reach_px, reach_px), np.uint8)
+        near = [cv2.dilate(s_, ker) for s_ in steps]
         trail_mask = np.zeros(grabs[0].shape, np.uint8)
-        for d in diffs:
-            trail_mask = cv2.max(trail_mask,
-                                 _accept_step(d, thr, mpp, max_width_mm, min_mm, max_mm))
+        for i, s_ in enumerate(steps):
+            company = np.zeros_like(s_)
+            if i > 0:
+                company = cv2.max(company, near[i - 1])
+            if i + 1 < len(steps):
+                company = cv2.max(company, near[i + 1])
+            keep = cv2.bitwise_and(s_, company)
+            n_, lab_, st_, _c = cv2.connectedComponentsWithStats((s_ > 0).astype(np.uint8), 8)
+            whole = np.zeros_like(s_)
+            for k in range(1, n_):
+                if (keep[lab_ == k] > 0).any():      # keep the piece, not the overlap
+                    whole[lab_ == k] = 255
+            trail_mask = cv2.max(trail_mask, whole)
         return trail_mask
 
     # Set the threshold from the noise, do not search for the value that yields
@@ -155,7 +173,7 @@ def measure(video, dish_mm, circle, every=5.0, edge=0.88, max_width_mm=2.5,
             "trail": trail_mask, "origin": (ox, oy), "mask": mask}
 
 
-def replay(video, dish_mm, circle, out, every=5.0, edge=0.88, max_width_mm=2.5,
+def replay(video, dish_mm, circle, out, every=5.0, edge=0.94, max_width_mm=2.5,
            threshold=None, log=print):
     """Render the dish with its trail painting itself, increment by increment.
 
