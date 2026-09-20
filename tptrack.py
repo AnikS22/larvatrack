@@ -34,6 +34,7 @@ SEARCH_MM_S = 4.0    # generous vs the ~1.5mm/s crawl, to survive a speck crossi
 MIN_DETECTIONS = 10  # shorter trajectories are specks flickering, not an animal
 MAX_GAP_S = 30.0     # past this a bridge is a guess, not a measurement
 RIM_FRAC = 0.95      # a trajectory living out here is the dish wall, not a larva
+ANCHOR_TOL_MM = 6.0  # how far a trajectory may sit from a pinned point and still be it
 
 
 def _sample(video, circle, every=EVERY_S):
@@ -165,7 +166,64 @@ def _drop_overlaps(trs):
     return kept
 
 
-def _attribute(kept):
+def to_crop(anchors, circle):
+    """Pinned points arrive in whole-frame pixels; everything here is in the
+    dish crop, whose origin is the circle's top-left corner."""
+    cx, cy, r = circle
+    return [(float(t), float(x) - (cx - r), float(y) - (cy - r))
+            for t, x, y in anchors]
+
+
+def _contradicted(traj, anchors, mpp, every=EVERY_S, tol_mm=ANCHOR_TOL_MM):
+    """True when the trajectory claims the animal was somewhere the user says it
+    was not.  A pin is a statement about one moment only, so a trajectory that
+    does not cover that moment is not contradicted by it - it is just silent.
+    """
+    t, xy = traj
+    for at, ax, ay in anchors:
+        i = int(np.argmin(np.abs(t - at)))
+        if abs(t[i] - at) > every:
+            continue
+        if math.hypot(xy[i][0] - ax, xy[i][1] - ay) * mpp > tol_mm:
+            return True
+    return False
+
+
+def _endorsed(traj, anchors, mpp, every=EVERY_S, tol_mm=ANCHOR_TOL_MM):
+    """True when the trajectory passes through at least one pinned point."""
+    t, xy = traj
+    for at, ax, ay in anchors:
+        i = int(np.argmin(np.abs(t - at)))
+        if abs(t[i] - at) <= every and \
+                math.hypot(xy[i][0] - ax, xy[i][1] - ay) * mpp <= tol_mm:
+            return True
+    return False
+
+
+def _attribute(kept, anchors=None, mpp=1.0):
+    """With pins, the animal is what the pins say it is.
+
+    Without them the longest trajectory is the best guess available, and that is
+    what goes wrong: the longest thing in the dish is sometimes a speck. A pin
+    settles it - trajectories that disagree with one are thrown out, and the
+    animal becomes whatever the pins actually touch.
+    """
+    if anchors:
+        ok = [k for k, p in enumerate(kept)
+              if not _contradicted(p, anchors, mpp)]
+        hit = [k for k in ok if _endorsed(kept[k], anchors, mpp)]
+        if hit:
+            lo, hi = min(hit), max(hit)
+            # Everything between the first and last endorsed piece, minus
+            # anything a pin rules out, is the same animal's walk.
+            group = [kept[k] for k in range(lo, hi + 1) if k in set(ok)]
+            return group, lo, hi
+        if ok:
+            kept = [kept[k] for k in ok]
+    return _attribute_longest(kept)
+
+
+def _attribute_longest(kept):
     """The trajectories belonging to the animal: the one we followed longest,
     plus neighbours near enough in time to be the same creature.
 
@@ -224,7 +282,7 @@ def chain(trs, circle, mpp):
 
 
 def measure(video, dish_mm, circle, every=EVERY_S, log=print, steady=False,
-            trs=None):
+            trs=None, anchors=None):
     """Path length in mm.
 
     Reports the longest single trajectory as the headline figure, because that
@@ -241,7 +299,10 @@ def measure(video, dish_mm, circle, every=EVERY_S, log=print, steady=False,
         log("no trajectories found")
         return 0.0, 0.0, 0.0
     kept = _drop_overlaps(trs)
-    group, lo, hi = _attribute(kept)
+    pins = to_crop(anchors, circle) if anchors else None
+    if pins:
+        log("%d correction(s) pinned" % len(pins))
+    group, lo, hi = _attribute(kept, pins, mpp)
 
     seen, bridged, segs = chain(group, circle, mpp)
     for t0, t1, d, how in segs:
@@ -287,7 +348,7 @@ def measure_each(video, dish_mm, circle, larvae, every=EVERY_S, log=print,
 
 
 def overlay(video, circle, out, every=EVERY_S, mm_per_px=None, larvae=1,
-            steady=False):
+            steady=False, anchors=None):
     """First frame with every kept trajectory drawn, so the path can be eyeballed."""
     cx, cy, r = circle
     cap = cv2.VideoCapture(video)
@@ -309,7 +370,8 @@ def overlay(video, circle, out, every=EVERY_S, mm_per_px=None, larvae=1,
         order = sorted(range(len(kept)), key=lambda k: -len(kept[k][0]))[:larvae]
         lo, hi, top = None, None, set(order)
     else:
-        _, lo, hi = _attribute(kept)
+        _, lo, hi = _attribute(kept, to_crop(anchors, circle) if anchors else None,
+                               mm_per_px or 1.0)
         top = None
     for i, (_, xy) in enumerate(kept):
         measured = (i in top) if top is not None else (lo <= i <= hi)
@@ -326,7 +388,7 @@ def overlay(video, circle, out, every=EVERY_S, mm_per_px=None, larvae=1,
 
 
 def replay(video, dish_mm, circle, out, every=EVERY_S, larvae=1, steady=False,
-           size=720, log=print, trs=None):
+           size=720, log=print, trs=None, anchors=None):
     """Write the clip back out with each path drawn in as it is walked.
 
     Same trajectories the measurement uses - this is the measurement being shown,
@@ -340,7 +402,8 @@ def replay(video, dish_mm, circle, out, every=EVERY_S, larvae=1, steady=False,
         raise SystemExit("no trajectories to replay")
     if larvae == 1:
         kept = _drop_overlaps(kept)
-        group, lo, hi = _attribute(kept)
+        group, lo, hi = _attribute(kept, to_crop(anchors, circle) if anchors else None,
+                                   mpp)
         shown = list(range(lo, hi + 1))
     else:
         shown = sorted(range(len(kept)), key=lambda k: -len(kept[k][0]))[:larvae]
@@ -468,6 +531,31 @@ def self_check():
         ys, xs = np.nonzero(f > 100)
         assert abs(ys.mean() - 33.5) < 1.5 and abs(xs.mean() - 39.5) < 1.5, \
             (ys.mean(), xs.mean())
+
+    # A pin must beat "longest wins". Here the speck is followed for longer than
+    # the animal, so the unpinned answer is the wrong one; pinning a point on the
+    # real path has to switch the verdict.
+    r2, mpp2 = 300.0, 100.0 / 600.0
+    animal_xy = np.column_stack([np.linspace(200, 400, 20), np.full(20, 300.0)])
+    speck_xy = np.column_stack([np.full(40, 120.0), np.linspace(100, 500, 40)])
+    animal = (np.arange(20) * EVERY_S, animal_xy)
+    speck = (np.arange(40) * EVERY_S, speck_xy)
+    kept = [speck, animal]                      # speck first: it is the longer
+    g_none, _, _ = _attribute(list(kept))
+    assert g_none[0] is speck, "unpinned should pick the longer trajectory"
+
+    # Pin a point the animal passes through, in whole-frame coordinates.
+    circle2 = (500.0, 500.0, r2)
+    pin_t = 10 * EVERY_S
+    pin = [(pin_t, animal_xy[10][0] + (circle2[0] - r2),
+            animal_xy[10][1] + (circle2[1] - r2))]
+    g_pin, _, _ = _attribute(list(kept), to_crop(pin, circle2), mpp2)
+    assert any(p is animal for p in g_pin), "a pin must select the trajectory it touches"
+    assert all(p is not speck for p in g_pin), "a pin must reject what it contradicts"
+
+    # A pin where nothing was tracked must not throw everything away.
+    lonely = [(500.0, circle2[0], circle2[1])]
+    assert _attribute(list(kept), to_crop(lonely, circle2), mpp2)[0]
 
     print("self-check ok (wall gap within %.1f%%, mid-dish chord is a lower bound)"
           % (err * 100))

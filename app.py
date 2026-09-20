@@ -114,10 +114,12 @@ def run_job(job_id):
         mpp = job["dish_mm"] / (2.0 * circle[2])
         trs = tptrack.trajectories(job["path"], circle, mm_per_px=mpp, log=log,
                                    steady=job["steady"])
+        anchors = job.get("anchors") or None
         total, seen, bridged = tptrack.measure(
-            job["path"], job["dish_mm"], circle, log=log, steady=job["steady"], trs=trs)
+            job["path"], job["dish_mm"], circle, log=log, steady=job["steady"],
+            trs=trs, anchors=anchors)
         tptrack.replay(job["path"], job["dish_mm"], circle, out, larvae=1,
-                       steady=job["steady"], log=log, trs=trs)
+                       steady=job["steady"], log=log, trs=trs, anchors=anchors)
         job.update(state="done", mm=round(total, 1), seen=round(seen, 1),
                    bridged=round(bridged, 1), replay="/replay?id=" + job_id)
     except Exception as e:
@@ -330,11 +332,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(400, "need dish_mm and a dish circle")
             if not (5.0 <= dish_mm <= 500.0) or r < 20:
                 return self.fail(400, "dish diameter or circle looks wrong")
+            try:
+                anchors = [(float(a["t"]), float(a["x"]), float(a["y"]))
+                           for a in (body.get("anchors") or [])][:200]
+            except (KeyError, TypeError, ValueError):
+                return self.fail(400, "a correction is missing t, x or y")
             job_id = safe_id(os.path.basename(path))
             with JOBS_LOCK:
                 JOBS[job_id] = {"state": "queued", "path": path, "cx": cx, "cy": cy,
                                 "r": r, "dish_mm": dish_mm,
-                                "steady": bool(body.get("steady")), "log": []}
+                                "steady": bool(body.get("steady")),
+                                "anchors": anchors, "log": []}
             enqueue(job_id)
             return self.send(200, {"job": job_id})
 

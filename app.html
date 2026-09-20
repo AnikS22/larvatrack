@@ -101,6 +101,19 @@ a{color:var(--accent)}
           <p class="note" id="dishnote">—</p>
         </fieldset>
 
+        <fieldset id="fs4" disabled>
+          <legend>corrections</legend>
+          <p class="note" style="margin:0">If it followed the wrong thing, scrub to
+            that moment and click the real larva. Each pin overrules the tracker.</p>
+          <label style="margin-top:9px">Time
+            <input type="range" id="scrub" min="0" max="100" value="0" step="1"
+                   style="width:100%;margin-top:6px"></label>
+          <p class="note" id="scrubnote" style="margin:0">0.0 s</p>
+          <div id="pins"></div>
+          <button class="ghost" id="clearpins" type="button"
+                  style="margin-top:9px" hidden>Clear corrections</button>
+        </fieldset>
+
         <fieldset id="fs3" disabled>
           <legend>3 — size &amp; run</legend>
           <label>Dish diameter (mm)
@@ -126,6 +139,7 @@ a{color:var(--accent)}
 <script>
 const $ = id => document.getElementById(id);
 let up = null, circle = null, drag = null, poll = null;
+let pins = [], scrubT = 0, frameCache = {};
 
 // Where the work happens. Served from this machine, BACKEND is the same origin;
 // served from Vercel, a deploy-time script points it at the laptop's tunnel, and
@@ -170,9 +184,41 @@ function draw(){
   c.width=img.naturalWidth; c.height=img.naturalHeight;
   const g=c.getContext('2d');
   g.clearRect(0,0,c.width,c.height);
-  if(!circle) return;
-  g.strokeStyle='#ffd24a'; g.lineWidth=Math.max(3, c.width/380);
-  g.beginPath(); g.arc(circle.cx,circle.cy,circle.r,0,7); g.stroke();
+  if(circle){
+    g.strokeStyle='#ffd24a'; g.lineWidth=Math.max(3, c.width/380);
+    g.beginPath(); g.arc(circle.cx,circle.cy,circle.r,0,7); g.stroke();
+  }
+  // Pins near the frame on screen, so it is obvious which one is being placed.
+  const R = Math.max(6, c.width/150);
+  pins.forEach(p => {
+    const near = Math.abs(p.t - scrubT) < 1.5;
+    g.strokeStyle = near ? '#5fd38d' : 'rgba(95,211,141,.35)';
+    g.lineWidth = Math.max(2, c.width/500);
+    g.beginPath(); g.arc(p.x, p.y, R, 0, 7); g.stroke();
+    g.beginPath(); g.moveTo(p.x-R*1.6, p.y); g.lineTo(p.x+R*1.6, p.y);
+    g.moveTo(p.x, p.y-R*1.6); g.lineTo(p.x, p.y+R*1.6); g.stroke();
+  });
+}
+
+function renderPins(){
+  $('pins').innerHTML = pins.length
+    ? pins.map((p,i) => `<p class="note" style="margin:4px 0">pin ${i+1} — ${p.t.toFixed(1)}s`
+        + ` <a href="#" data-i="${i}" class="drop">remove</a></p>`).join('')
+    : '<p class="note" style="margin:4px 0">no corrections</p>';
+  $('clearpins').hidden = !pins.length;
+  $('pins').querySelectorAll('.drop').forEach(a => a.onclick = ev => {
+    ev.preventDefault(); pins.splice(+a.dataset.i, 1); renderPins(); draw();
+  });
+  $('go').textContent = pins.length ? 'Re-measure with corrections' : 'Measure the path';
+}
+
+async function seek(t){
+  scrubT = t;
+  $('scrubnote').textContent = t.toFixed(1) + ' s';
+  showFrame();
+  if(!frameCache[t]) frameCache[t] = await blobURL(
+    `/frame?id=${encodeURIComponent(up.id)}&t=${t}`);
+  $('shot').src = frameCache[t];
 }
 
 function setCircle(c, how){
@@ -237,6 +283,10 @@ $('file').onchange = async e => {
     $('upnote').textContent = `${j.w}×${j.h}, ${j.dur}s`;
     $('barwrap').hidden = true;
     $('fs2').disabled = false;
+    $('fs4').disabled = false;
+    pins = []; frameCache = {}; scrubT = 0; renderPins();
+    $('scrub').max = String(Math.max(1, Math.floor(j.dur)));
+    $('scrub').value = '0';
     $('stagenote').textContent = 'Drag across the dish to set it, or use a button on the right.';
     const bb = $('dishbtns'); bb.innerHTML='';
     (j.dishes||[]).forEach((d,i) => {
@@ -264,9 +314,22 @@ function at(e){
   return {x:(p.clientX-b.left)*img.naturalWidth/b.width,
           y:(p.clientY-b.top)*img.naturalHeight/b.height};
 }
+$('scrub').oninput = e => { if(up) seek(+e.target.value); };
+$('clearpins').onclick = () => { pins = []; renderPins(); draw(); };
+
 $('shot').addEventListener('pointerdown', e => {
   if($('fs2').disabled) return;
-  e.preventDefault(); drag = at(e);
+  e.preventDefault();
+  // Once the dish is set, a click on the frame pins where the larva really is.
+  if(circle && scrubT > 0){
+    const p = at(e);
+    pins = pins.filter(q => Math.abs(q.t - scrubT) > 0.5);
+    pins.push({t: scrubT, x: p.x, y: p.y});
+    pins.sort((a,b) => a.t - b.t);
+    renderPins(); draw();
+    return;
+  }
+  drag = at(e);
 });
 addEventListener('pointermove', e => {
   if(!drag) return;
@@ -287,13 +350,14 @@ addEventListener('pointerup', () => {
 // ---- measure ----
 $('go').onclick = async () => {
   if(!up || !circle) return;
-  $('go').disabled = true; $('go').textContent = 'Measuring…';
+  $('go').disabled = true;
+  const label = $('go').textContent; $('go').textContent = 'Measuring…';
   $('result').style.display='block'; $('mm').textContent='—';
   $('detail').textContent=''; $('log').textContent='queued…';
   step(4);
   const r = await api('/measure', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({id:up.id, dish_mm:+$('dish').value, steady:$('steady').checked,
-                          cx:circle.cx, cy:circle.cy, r:circle.r})});
+                          cx:circle.cx, cy:circle.cy, r:circle.r, anchors:pins})});
   const j = await r.json();
   if(j.error){ $('log').innerHTML=`<span class="err">${j.error}</span>`; reset(); return; }
   clearInterval(poll);
@@ -301,7 +365,10 @@ $('go').onclick = async () => {
   check(j.job);
 };
 
-function reset(){ $('go').disabled=false; $('go').textContent='Measure the path'; }
+function reset(){
+  $('go').disabled = false;
+  $('go').textContent = pins.length ? 'Re-measure with corrections' : 'Measure the path';
+}
 
 async function check(id){
   const j = await (await api('/job?id='+encodeURIComponent(id))).json();
