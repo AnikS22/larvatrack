@@ -32,7 +32,8 @@ class NoLarva(Exception):
 
 
 EVERY_S = 2.0        # sampling interval; the linker's search range scales with it
-DIAMETER = 13        # odd, and a bit larger than the larva in px at working scale
+DIAMETER = 13        # odd, and a bit larger than the larva in px at a 600px dish
+REF_DISH_PX = 600.0  # the dish size DIAMETER was chosen against
 MASS_PCT = 99.5      # keep only the brightest features - the rest are agar specks
 MEMORY = 20          # frames a trajectory may vanish for and still be continued
 SEARCH_MM_S = 4.0    # generous vs the ~1.5mm/s crawl, to survive a speck crossing
@@ -99,6 +100,18 @@ def stabilise(frames):
     return out
 
 
+def feature_px(dish_px):
+    """Detector width in pixels, scaled to how big the dish actually is.
+
+    A larva is a fixed fraction of the dish, not a fixed number of pixels. Held
+    at 13 the detector hunts for blobs far larger than the animal in any clip
+    that was downscaled on its way here - it finds nothing and the clip looks
+    untrackable when it is merely small. trackpy needs an odd number, minimum 3.
+    """
+    d = int(round(DIAMETER * dish_px / REF_DISH_PX))
+    return max(3, d + 1 - d % 2)
+
+
 def _moving(frames):
     """Per-pixel median over the clip removes the agar; what is left moved."""
     bg = np.median(np.stack(frames), axis=0).astype(np.uint8)
@@ -122,7 +135,11 @@ def trajectories(video, circle, every=EVERY_S, mm_per_px=None, log=print,
     diffs = _moving(frames)
     # Two passes: the first learns what a bright feature looks like in this dish,
     # so the mass cut adapts to the lighting instead of being a magic number.
-    probe = tp.batch(np.stack(diffs), DIAMETER, minmass=1)
+    diam = feature_px(2 * circle[2])
+    if diam != DIAMETER:
+        log("dish is %d px across, so detecting at %d px instead of %d"
+            % (int(2 * circle[2]), diam, DIAMETER))
+    probe = tp.batch(np.stack(diffs), diam, minmass=1)
     if probe.empty:
         return []
     minmass = float(np.percentile(probe["mass"], MASS_PCT))
@@ -560,6 +577,13 @@ def self_check():
     # A pin where nothing was tracked must not throw everything away.
     lonely = [(500.0, circle2[0], circle2[1])]
     assert _attribute(list(kept), to_crop(lonely, circle2), mpp2)[0]
+
+    # The detector has to shrink with the dish or a downscaled clip finds nothing.
+    assert feature_px(600) == 13, feature_px(600)
+    assert feature_px(95) == 3, feature_px(95)      # the clip that found nothing
+    assert feature_px(300) == 7, feature_px(300)
+    assert all(feature_px(p) % 2 == 1 and feature_px(p) >= 3
+               for p in (10, 50, 95, 300, 600, 1200))
 
     print("self-check ok (wall gap within %.1f%%, mid-dish chord is a lower bound)"
           % (err * 100))

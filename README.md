@@ -121,6 +121,28 @@ over-long gaps, and the drift correction.
 | `trail.py` | older trail-area method, kept as a cross-check |
 | `larvatrack.py` | earlier hand-rolled tracker; still used for dish auto-detection |
 
+## Resolution matters more than you would think
+
+The dish must be about **440 px across** in the clip. This is measured, not a
+guess — the same recording downscaled, against its full-resolution answer of
+72.1 mm:
+
+| dish in frame | measured | error |
+|---|---|---|
+| 534 px | 71.4 mm | −1% |
+| 445 px | 72.3 mm | +0% |
+| 392 px | 112.4 mm | **+56%** |
+| 297 px | 174.0 mm | **+141%** |
+| 148 px | nothing found | — |
+
+It does not degrade gracefully. Past the cliff it returns a confident wrong
+number rather than a rough one, so clips below the threshold are refused instead
+of measured. The detector width scales with the dish, which is what makes the
+445 px case work at all.
+
+**AirDrop, iMessage and iCloud Photos all shrink video.** Send the original file
+off the phone, not a copy that has been through any of them.
+
 ## Known limits
 
 - Needs a still camera and visible contrast between larva and agar. One test clip

@@ -42,10 +42,16 @@ CORS = {"Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Max-Age": "86400"}
 MAX_UPLOAD = 2 * 1024 ** 3          # 2GB; a 8min 4K clip is well under this
-# A larva is roughly 2% of the dish across. Below this the animal is a couple of
-# pixels and nothing can follow it - better to say so at once than to queue for
-# minutes and come back with "no larva found".
-MIN_DISH_PX = 200
+# Measured, not guessed. The same clip downscaled, against its full-res answer
+# of 72.1mm:
+#     dish 534px  71.4mm   -1%
+#     dish 445px  72.3mm   +0%
+#     dish 392px 112.4mm  +56%
+#     dish 297px 174.0mm +141%
+#     dish 148px   nothing found
+# It does not degrade gracefully - below the cliff it returns confident nonsense
+# rather than an imprecise answer, which is far worse than refusing.
+MIN_DISH_PX = 440
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 EXPECTED = {}                       # upload id -> byte count the client promised
@@ -353,11 +359,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(400, "dish diameter or circle looks wrong")
             if 2 * r < MIN_DISH_PX:
                 return self.fail(400,
-                    "the dish is only %d px across in this clip, so a larva is "
-                    "about %.1f px - too small to track. Either the dish circle "
-                    "is set too small, or the video was downscaled before upload "
+                    "the dish is only %d px across; below about %d px the "
+                    "measurement is not just rough, it is wrong - the same clip "
+                    "at this size reads 141%% too long. Either the dish circle is "
+                    "set too small, or the video was downscaled before upload "
                     "(AirDrop, iMessage and iCloud all do this). Send the "
-                    "original recording." % (2 * r, 0.02 * 2 * r))
+                    "original recording." % (2 * r, MIN_DISH_PX))
             try:
                 anchors = [(float(a["t"]), float(a["x"]), float(a["y"]))
                            for a in (body.get("anchors") or [])][:200]
