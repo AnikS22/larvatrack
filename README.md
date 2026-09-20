@@ -15,6 +15,20 @@ and running distance burned in.
 
 </div>
 
+### Figures
+
+![single larva paths](docs/fig1_single_larva_paths.png)
+
+**Figure 1.** Reconstructed crawling paths for single-larva plates. Red traces
+show the measured trajectory; scale bars 10 mm.
+
+![multiple larvae paths](docs/fig2_multiple_larvae_paths.png)
+
+**Figure 2.** Plates containing five larvae, each trajectory in its own colour.
+Lengths are per-trajectory and do not establish per-animal identity across gaps.
+
+Regenerate both with `.venv-track/bin/python make_figures.py`.
+
 ---
 
 > ### One larva at a time
