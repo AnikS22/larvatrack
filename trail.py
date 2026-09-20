@@ -84,59 +84,8 @@ def _accept_step(diff, thr, mpp, max_width_mm, min_mm, max_mm=None):
     return out
 
 
-def _step_pieces(diff, thr, mpp, max_width_mm, min_mm, max_mm):
-    """Candidate larva-steps in one increment, with their centres."""
-    bw = (diff > thr).astype(np.uint8) * 255
-    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    n, lab, stats, cent = cv2.connectedComponentsWithStats((bw > 0).astype(np.uint8), 8)
-    out = []
-    for k in range(1, n):
-        if stats[k, cv2.CC_STAT_AREA] < 25:
-            continue
-        piece = (lab == k).astype(np.uint8) * 255
-        mm, w = ribbon_mm(piece, mpp)
-        if w <= max_width_mm and min_mm <= mm <= max_mm:
-            out.append({"mask": piece, "mm": mm,
-                        "xy": (float(cent[k][0]), float(cent[k][1]))})
-    return out
-
-
-def chain_one(steps, reach_px, log=print):
-    """Follow ONE animal through the increments.
-
-    A solo dish holds one larva, so two paths cannot be laid at the same moment:
-    in any increment at most one piece is the animal and the rest are artefacts.
-    Choosing the piece that continues where the larva just was rejects a rim arc
-    and a speck alike, without a threshold for either - the constraint does the
-    work. Every plausible start is tried and the longest chain wins, so a noisy
-    first increment cannot send it off after the wrong thing.
-    """
-    best = None
-    starts = [(i, p) for i in range(min(len(steps), 8)) for p in steps[i]]
-    for si, sp in starts:
-        chain, last, total = [(si, sp)], sp["xy"], sp["mm"]
-        gap = 0
-        for i in range(si + 1, len(steps)):
-            near = [p for p in steps[i]
-                    if math.hypot(p["xy"][0] - last[0], p["xy"][1] - last[1])
-                    <= reach_px * (1 + gap)]
-            if not near:
-                gap += 1
-                if gap > 6:                          # half a minute with no sign of it
-                    break
-                continue
-            pick = min(near, key=lambda p: math.hypot(p["xy"][0] - last[0],
-                                                      p["xy"][1] - last[1]))
-            chain.append((i, pick))
-            last, total, gap = pick["xy"], total + pick["mm"], 0
-        if best is None or total > best[0]:
-            best = (total, chain)
-    return best if best else (0.0, [])
-
-
 def measure(video, dish_mm, circle, every=5.0, edge=0.94, max_width_mm=2.5,
-            threshold=None, solo=True, log=print):
+            threshold=None, log=print):
     """Total trail length in mm for one dish.
 
     Each increment - what changed over the last `every` seconds - is judged on its
@@ -187,16 +136,6 @@ def measure(video, dish_mm, circle, every=5.0, edge=0.94, max_width_mm=2.5,
     # times the gap - anything longer is a shadow sweeping across, not an animal.
     max_mm = lt.D["max_speed"] * every
 
-    def build_one(thr):
-        """Solo dish: one larva, so one chain of increments."""
-        steps = [_step_pieces(d, thr, mpp, max_width_mm, min_mm, max_mm) for d in diffs]
-        reach_px = (max_mm * 1.3) / mpp
-        total, chain = chain_one(steps, reach_px)
-        tm = np.zeros(grabs[0].shape, np.uint8)
-        for _i, p in chain:
-            tm = cv2.max(tm, p["mask"])
-        return tm, chain
-
     def build(thr):
         steps = [_accept_step(d, thr, mpp, max_width_mm, min_mm, max_mm) for d in diffs]
         # A crawling larva leaves a CHAIN: where it was this step, it was nearby
@@ -225,43 +164,33 @@ def measure(video, dish_mm, circle, every=5.0, edge=0.94, max_width_mm=2.5,
     # Set the threshold from the noise, do not search for the value that yields
     # the most trail: that objective rewards noise and drives it to the floor.
     thr = threshold if threshold is not None else base
-    chain = []
-    if solo:
-        trail_mask, chain = build_one(thr)
-        linked = len(chain)
-    else:
-        trail_mask, linked = build(thr), 0
+    trail_mask = build(thr)
 
     total, width = ribbon_mm(trail_mask, mpp)
-    log(f"{total:.1f} mm at threshold {thr}, {linked} of {len(diffs)} increments linked")
+    log(f"{total:.1f} mm of trail at threshold {thr} ({len(diffs)} increments)")
     return {"totalMm": round(total, 1), "threshold": thr, "mmPerPx": round(mpp, 5),
-            "widthMm": round(width, 2), "frames": len(grabs), "linked": linked,
-            "increments": len(diffs), "trail": trail_mask, "origin": (ox, oy),
-            "mask": mask, "chain": chain, "every": every}
+            "widthMm": round(width, 2), "frames": len(grabs),
+            "trail": trail_mask, "origin": (ox, oy), "mask": mask}
 
 
 def replay(video, dish_mm, circle, out, every=5.0, edge=0.94, max_width_mm=2.5,
-           threshold=None, solo=True, log=print):
-    """Render the dish with its path painting itself, increment by increment.
+           threshold=None, log=print):
+    """Render the dish with its trail painting itself, increment by increment.
 
-    It paints the chain the measurement chose, in time order, so what you watch
-    and what it reports are the same thing.
+    Exactly the same accumulation the measurement uses, so the number on screen at
+    the end is the number it reports.
     """
     import shutil, subprocess
     m = measure(video, dish_mm, circle, every=every, edge=edge,
-                max_width_mm=max_width_mm, threshold=threshold, solo=solo,
-                log=lambda *a: None)
+                max_width_mm=max_width_mm, threshold=threshold, log=lambda *a: None)
+    thr, mpp, mask = m["threshold"], m["mmPerPx"], m["mask"]
     ox, oy = m["origin"]
-    mask = m["mask"]
     cx, cy, r = circle
     side = int(2 * r)
-    mpp = m["mmPerPx"]
-    by_step = {}
-    for i, p in m["chain"]:
-        by_step.setdefault(i, []).append(p["mask"])
 
     cap = cv2.VideoCapture(video)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    dur = (cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) / max(fps, 1e-6)
     size = 720
     ff = shutil.which("ffmpeg")
     if not ff:
@@ -273,10 +202,10 @@ def replay(video, dish_mm, circle, out, every=5.0, edge=0.94, max_width_mm=2.5,
          "-movflags", "+faststart", out],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
-    painted = np.zeros(mask.shape, np.uint8)
-    n = 0
-    for i in range(m["increments"]):
-        t = (i + 1) * every
+    trail_mask = np.zeros(mask.shape, np.uint8)
+    prev = None
+    t, n = 0.0, 0
+    while t < dur:
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
         ok, f = cap.read()
         if not ok:
@@ -284,34 +213,29 @@ def replay(video, dish_mm, circle, out, every=5.0, edge=0.94, max_width_mm=2.5,
         cur = f[oy:oy + side, ox:ox + side]
         if cur.shape[:2] != mask.shape:
             break
-        for pm in by_step.get(i, []):
-            painted = cv2.max(painted, pm)
-        total, _w = ribbon_mm(painted, mpp)
+        g = cv2.cvtColor(cur, cv2.COLOR_BGR2GRAY)
+        if prev is not None:
+            d = cv2.bitwise_and(cv2.absdiff(cv2.GaussianBlur(g, (0, 0), 2),
+                                            cv2.GaussianBlur(prev, (0, 0), 2)), mask)
+            trail_mask = cv2.max(trail_mask,
+                                 _accept_step(d, thr, mpp, max_width_mm, 0.8))
+        prev = g
+        total, _w = ribbon_mm(trail_mask, mpp)
         im = cv2.resize(cur, (size, size))
-        paint = cv2.resize(painted, (size, size), interpolation=cv2.INTER_NEAREST)
+        paint = cv2.resize(trail_mask, (size, size), interpolation=cv2.INTER_NEAREST)
         im[paint > 0] = (0.2 * im[paint > 0] + 0.8 * np.array([60, 60, 255])).astype(np.uint8)
-        here = by_step.get(i)
-        if here:
-            ys, xs = np.nonzero(here[-1])
-            if len(xs):
-                cv2.circle(im, (int(xs.mean() * size / mask.shape[1]),
-                                int(ys.mean() * size / mask.shape[0])),
-                           13, (80, 255, 80), 2, cv2.LINE_AA)
-        cv2.putText(im, f"path {total:6.1f} mm", (12, 30), cv2.FONT_HERSHEY_SIMPLEX,
+        cv2.putText(im, f"trail {total:6.1f} mm", (12, 30), cv2.FONT_HERSHEY_SIMPLEX,
                     .7, (60, 60, 255), 2, cv2.LINE_AA)
         cv2.putText(im, f"{t:5.0f}s", (size - 96, 30), cv2.FONT_HERSHEY_SIMPLEX, .7,
                     (255, 255, 255), 2, cv2.LINE_AA)
-        if not here:
-            cv2.putText(im, "lost", (12, 58), cv2.FONT_HERSHEY_SIMPLEX, .6,
-                        (80, 200, 255), 2, cv2.LINE_AA)
         proc.stdin.write(im.tobytes())
         n += 1
+        t += every
     cap.release()
     proc.stdin.close()
     if proc.wait() != 0:
         raise lt.TrackingError("ffmpeg failed: " + proc.stderr.read().decode()[-200:])
-    log(f"wrote {out} ({n} frames); {m['totalMm']} mm, "
-        f"{m['linked']}/{m['increments']} increments linked")
+    log(f"wrote {out} ({n} frames); ends at {m['totalMm']} mm")
     return m
 
 
