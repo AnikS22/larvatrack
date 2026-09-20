@@ -27,7 +27,17 @@ show the measured trajectory; scale bars 10 mm.
 **Figure 2.** Plates containing five larvae, each trajectory in its own colour.
 Lengths are per-trajectory and do not establish per-animal identity across gaps.
 
-Regenerate both with `.venv-track/bin/python make_figures.py`.
+![motion heatmap](docs/fig3_motion_heatmap.png)
+
+**Figure 3.** Raw motion evidence underlying the reconstruction. Left: every 2 s
+interval in which something moved, accumulated over the recording. Right: the
+same samples coloured by time (blue early, red late), showing the animal's
+progress along the plate wall. Scattered flecks away from the trail are agar
+debris flickering between frames, which is why detection alone is insufficient
+and trajectories must be linked and filtered.
+
+Regenerate with `.venv-track/bin/python make_figures.py` and
+`.venv-track/bin/python make_heatmap.py`.
 
 ---
 
