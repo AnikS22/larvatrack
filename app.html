@@ -56,7 +56,7 @@ a{color:var(--accent)}
 </style>
 
 <div class="wrap">
-  <h1>larva<span>track</span></h1>
+  <h1>larva<span>track</span> <small id="who" style="font-size:15px;color:var(--dim)"></small></h1>
   <p class="sub">Upload a clip, say which dish to look in and how wide it is, and get how far
     the larva crawled — with a replay so you can check it followed the right animal.</p>
   <p class="solo"><b>One larva at a time.</b> This measures a single animal per run. A dish with
@@ -107,16 +107,24 @@ a{color:var(--accent)}
         </fieldset>
 
         <fieldset id="fs4" hidden>
-          <legend>corrections</legend>
-          <p class="note" style="margin:0">If it followed the wrong thing, scrub to
+          <legend id="fs4leg">corrections</legend>
+          <p class="note" id="fs4note" style="margin:0">If it followed the wrong thing, scrub to
             that moment and click the real larva. Each pin overrules the tracker.</p>
           <label style="margin-top:9px">Time
             <input type="range" id="scrub" min="0" max="100" value="0" step="1"
                    style="width:100%;margin-top:6px"></label>
           <p class="note" id="scrubnote" style="margin:0">0.0 s</p>
           <div id="pins"></div>
+          <div id="larvapick" hidden style="margin-top:10px">
+            <label style="margin:0">Which larva are you following?</label>
+            <div class="dishbtns" id="larvabtns"></div>
+          </div>
+          <div style="display:flex;gap:7px;margin-top:9px">
+            <button class="ghost" id="stepback" type="button">◀ 2s</button>
+            <button class="ghost" id="stepfwd" type="button">2s ▶</button>
+          </div>
           <button class="ghost" id="clearpins" type="button"
-                  style="margin-top:9px" hidden>Clear corrections</button>
+                  style="margin-top:7px" hidden>Clear all points</button>
         </fieldset>
 
         <fieldset id="fs3" disabled>
@@ -127,6 +135,8 @@ a{color:var(--accent)}
             <input type="checkbox" id="steady" style="width:auto;margin:0">
             <span>Camera moved during filming</span></label>
           <button id="go" disabled>Measure the path</button>
+          <button class="ghost" id="hand" type="button" style="margin-top:8px">
+            Trace it by hand instead</button>
           <p class="note">Takes a minute or two for a 5-minute clip.</p>
         </fieldset>
       </div>
@@ -144,7 +154,9 @@ a{color:var(--accent)}
 <script>
 const $ = id => document.getElementById(id);
 let up = null, circle = null, drag = null, poll = null;
-let pins = [], scrubT = 0, frameCache = {};
+let pins = [], scrubT = 0, frameCache = {}, manual = false;
+let curLarva = 1, nLarvae = 1;
+const LCOL = ['#ff3b30','#ffb340','#5fd38d','#ff6bff','#4aa8ff'];
 
 // Where the work happens. Served from this machine, BACKEND is the same origin;
 // served from Vercel, a deploy-time script points it at the laptop's tunnel, and
@@ -176,6 +188,30 @@ async function health(){
   }
 }
 health();
+
+// A tab can arrive pre-aimed at one dish: ?clip=<path>&cx=&cy=&r=&mm=&larvae=&auto=1
+// That is how several plates get worked through side by side, one tab each,
+// without setting the same thing up seven times.
+(async function fromURL(){
+  const q = new URLSearchParams(location.search);
+  const clip = q.get('clip');
+  if(!clip) return;
+  try{
+    $('upnote').textContent = 'loading the clip…';
+    const r = await api('/local/pick', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({path: clip})});
+    const j = await r.json();
+    if(j.error) throw new Error(j.error);
+    await useClip(j);
+    if(q.get('mm')) $('dish').value = q.get('mm');
+    if(q.get('cx') && q.get('r')){
+      setCircle({cx:+q.get('cx'), cy:+q.get('cy'), r:+q.get('r')}, 'from the link');
+    }
+    if(q.get('label')) document.title = q.get('label') + ' — larvatrack';
+    if(q.get('label')) $('who').textContent = q.get('label');
+    if(q.get('auto') === '1' && circle) $('go').click();
+  }catch(err){ $('upnote').innerHTML = `<span class="err">${err.message}</span>`; }
+})();
 
 // When the server offers files already on disk, use them: nothing to transfer,
 // which matters most for the clips that live on this machine anyway.
@@ -223,9 +259,24 @@ function draw(){
   }
   // Pins near the frame on screen, so it is obvious which one is being placed.
   const R = Math.max(6, c.width/150);
+  // Join each larva's own points, so a trace reads as a path not a scatter.
+  if(manual){
+    const byL = {};
+    pins.forEach(p => (byL[p.larva||1] = byL[p.larva||1] || []).push(p));
+    Object.entries(byL).forEach(([k, ps]) => {
+      ps.sort((a,b)=>a.t-b.t);
+      if(ps.length < 2) return;
+      g.strokeStyle = LCOL[(+k-1)%LCOL.length];
+      g.lineWidth = Math.max(2, c.width/420);
+      g.beginPath(); g.moveTo(ps[0].x, ps[0].y);
+      ps.slice(1).forEach(p => g.lineTo(p.x, p.y));
+      g.stroke();
+    });
+  }
   pins.forEach(p => {
     const near = Math.abs(p.t - scrubT) < 1.5;
-    g.strokeStyle = near ? '#5fd38d' : 'rgba(95,211,141,.35)';
+    const base = manual ? LCOL[((p.larva||1)-1)%LCOL.length] : '#5fd38d';
+    g.strokeStyle = near ? base : base + '59';
     g.lineWidth = Math.max(2, c.width/500);
     g.beginPath(); g.arc(p.x, p.y, R, 0, 7); g.stroke();
     g.beginPath(); g.moveTo(p.x-R*1.6, p.y); g.lineTo(p.x+R*1.6, p.y);
@@ -233,16 +284,71 @@ function draw(){
   });
 }
 
+function larvaButtons(){
+  const b = $('larvabtns'); b.innerHTML = '';
+  for(let i=1;i<=nLarvae;i++){
+    const btn = document.createElement('button');
+    btn.textContent = 'larva ' + i;
+    btn.className = i === curLarva ? 'on' : '';
+    btn.style.borderColor = LCOL[(i-1)%LCOL.length];
+    btn.onclick = () => { curLarva = i; larvaButtons(); renderPins(); draw(); };
+    b.appendChild(btn);
+  }
+  const more = document.createElement('button');
+  more.textContent = '+ another';
+  more.onclick = () => { if(nLarvae < 5){ nLarvae++; curLarva = nLarvae;
+                         larvaButtons(); renderPins(); draw(); } };
+  b.appendChild(more);
+}
+
+function setManual(on){
+  manual = on;
+  $('larvapick').hidden = !on;
+  if(on) larvaButtons();
+  $('fs4').hidden = false;
+  $('fs4leg').textContent = on ? 'trace by hand' : 'corrections';
+  $('fs4note').textContent = on
+    ? 'Step through the clip and click the larva each time. The line through your '
+      + 'clicks is the path — click more often through a turn.'
+    : 'If it followed the wrong thing, scrub to that moment and click the real '
+      + 'larva. Each pin overrules the tracker.';
+  $('hand').textContent = on ? 'Back to automatic tracking' : 'Trace it by hand instead';
+  renderPins();
+}
+
 function renderPins(){
-  $('pins').innerHTML = pins.length
-    ? pins.map((p,i) => `<p class="note" style="margin:4px 0">pin ${i+1} — ${p.t.toFixed(1)}s`
+  const shown = manual ? pins.filter(p => (p.larva||1) === curLarva) : pins;
+  $('pins').innerHTML = shown.length
+    ? shown.map((p,i) => `<p class="note" style="margin:4px 0">${p.t.toFixed(1)}s`
         + ` <a href="#" data-i="${i}" class="drop">remove</a></p>`).join('')
     : '<p class="note" style="margin:4px 0">no corrections</p>';
   $('clearpins').hidden = !pins.length;
+  if(manual){
+    // Live total, so it is obvious whether the trace is going anywhere.
+    const mpp = circle ? (+$('dish').value || 100) / (2*circle.r) : 0;
+    const byL = {};
+    pins.forEach(p => (byL[p.larva||1] = byL[p.larva||1] || []).push(p));
+    let html = '';
+    Object.keys(byL).sort().forEach(k => {
+      const ps = byL[k].sort((a,b)=>a.t-b.t);
+      let mm = 0;
+      for(let i=1;i<ps.length;i++)
+        mm += Math.hypot(ps[i].x-ps[i-1].x, ps[i].y-ps[i-1].y) * mpp;
+      html += `<p class="note" style="margin:3px 0;color:${LCOL[(+k-1)%LCOL.length]}">`
+            + `<b>larva ${k}: ${mm.toFixed(1)} mm</b> (${ps.length} pts)</p>`;
+    });
+    $('pins').insertAdjacentHTML('afterbegin', html);
+  }
   $('pins').querySelectorAll('.drop').forEach(a => a.onclick = ev => {
-    ev.preventDefault(); pins.splice(+a.dataset.i, 1); renderPins(); draw();
+    ev.preventDefault();
+    const p = shown[+a.dataset.i];
+    pins = pins.filter(q => q !== p);
+    renderPins(); draw();
   });
-  $('go').textContent = pins.length ? 'Re-measure with corrections' : 'Measure the path';
+  $('go').textContent = manual
+    ? (pins.length > 1 ? 'Save hand-traced path(s)' : 'Click at least two points')
+    : (pins.length ? 'Re-measure with corrections' : 'Measure the path');
+  $('go').disabled = manual ? pins.length < 2 : !circle;
 }
 
 async function seek(t){
@@ -360,15 +466,27 @@ function at(e){
 }
 $('scrub').oninput = e => { if(up) seek(+e.target.value); };
 $('clearpins').onclick = () => { pins = []; renderPins(); draw(); };
+$('hand').onclick = () => {
+  if(!circle){ $('dishnote').textContent = 'set the dish first'; return; }
+  setManual(!manual);
+  if(manual && scrubT === 0) seek(0);
+};
+const step2 = d => {
+  const t = Math.max(0, Math.min(+$('scrub').max, scrubT + d));
+  $('scrub').value = String(t); seek(t);
+};
+$('stepback').onclick = () => step2(-2);
+$('stepfwd').onclick  = () => step2(2);
 
 $('shot').addEventListener('pointerdown', e => {
   if($('fs2').disabled) return;
   e.preventDefault();
   // Once the dish is set, a click on the frame pins where the larva really is.
-  if(circle && scrubT > 0){
+  if(circle && (manual || scrubT > 0)){
     const p = at(e);
-    pins = pins.filter(q => Math.abs(q.t - scrubT) > 0.5);
-    pins.push({t: scrubT, x: p.x, y: p.y});
+    pins = pins.filter(q => !(Math.abs(q.t - scrubT) < 0.5
+                              && (q.larva || 1) === curLarva));
+    pins.push({t: scrubT, x: p.x, y: p.y, larva: curLarva});
     pins.sort((a,b) => a.t - b.t);
     renderPins(); draw();
     return;
@@ -401,7 +519,8 @@ $('go').onclick = async () => {
   step(4);
   const r = await api('/measure', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({id:up.id, dish_mm:+$('dish').value, steady:$('steady').checked,
-                          cx:circle.cx, cy:circle.cy, r:circle.r, anchors:pins})});
+                          cx:circle.cx, cy:circle.cy, r:circle.r, anchors:pins,
+                          manual:manual})});
   const j = await r.json();
   if(j.error){ $('log').innerHTML=`<span class="err">${j.error}</span>`; reset(); return; }
   clearInterval(poll);
@@ -411,7 +530,10 @@ $('go').onclick = async () => {
 
 function reset(){
   $('go').disabled = false;
-  $('go').textContent = pins.length ? 'Re-measure with corrections' : 'Measure the path';
+  $('go').textContent = manual
+    ? (pins.length > 1 ? 'Save hand-traced path(s)' : 'Click at least two points')
+    : (pins.length ? 'Re-measure with corrections' : 'Measure the path');
+  $('go').disabled = manual ? pins.length < 2 : !circle;
 }
 
 async function check(id){
@@ -432,7 +554,7 @@ async function check(id){
     const v = $('rep');
     v.src = await blobURL(j.replay); showReplay();
     // Only now is there something to disagree with.
-    $('fs4').hidden = false;
+    if(!manual) $('fs4').hidden = false;
     $('stagenote').textContent = 'Replay: the path being drawn as it was walked. '
       + 'If it followed the wrong thing, you will see it here.';
     v.play().catch(()=>{});

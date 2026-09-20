@@ -132,6 +132,19 @@ def run_job(job_id):
         trs = tptrack.trajectories(job["path"], circle, mm_per_px=mpp, log=log,
                                    steady=job["steady"])
         anchors = job.get("anchors") or None
+        if job.get("manual"):
+            # Hand-traced: the clicked points ARE the path. No detection, no
+            # trajectory picking - the operator has already decided where the
+            # animal was, and the job is only to add the distance up.
+            per = tptrack.manual_paths(job["dish_mm"], circle, anchors, log=log)
+            tptrack.manual_replay(job["path"], job["dish_mm"], circle, anchors,
+                                  out, log=log)
+            total = sum(per.values())
+            job.update(state="done", mm=round(total, 1), seen=round(total, 1),
+                       bridged=0.0, manual=True,
+                       per_larva={str(k): round(v, 1) for k, v in per.items()},
+                       replay="/replay?id=" + job_id)
+            return
         if not trs:
             raise tptrack.NoLarva(
                 "no larva found in that dish. The dish circle is %d px across; if "
@@ -241,6 +254,15 @@ class Handler(BaseHTTPRequestHandler):
             # unrelated 6GB video projects to the top of the list.
             out.sort(key=lambda r: (r["rank"], r["name"].lower()))
             return self.send(200, {"files": out[:400]})
+
+        if u.path == "/jobs":
+            out = []
+            for jid, j in JOBS.items():
+                out.append({k: v for k, v in j.items()
+                            if k not in ("path", "log", "anchors")}
+                           | {"id": jid, "video": os.path.basename(j["path"]),
+                              "pins": len(j.get("anchors") or [])})
+            return self.send(200, {"jobs": out})
 
         if u.path == "/health":
             with QUEUE_CV:
@@ -415,16 +437,20 @@ class Handler(BaseHTTPRequestHandler):
                     "(AirDrop, iMessage and iCloud all do this). Send the "
                     "original recording." % (2 * r, MIN_DISH_PX))
             try:
-                anchors = [(float(a["t"]), float(a["x"]), float(a["y"]))
-                           for a in (body.get("anchors") or [])][:200]
+                anchors = [(float(a["t"]), float(a["x"]), float(a["y"]),
+                            int(a.get("larva", 1)))
+                           for a in (body.get("anchors") or [])][:2000]
             except (KeyError, TypeError, ValueError):
                 return self.fail(400, "a correction is missing t, x or y")
+            manual = bool(body.get("manual"))
+            if manual and len(anchors) < 2:
+                return self.fail(400, "hand tracing needs at least two points")
             job_id = safe_id(os.path.basename(path))
             with JOBS_LOCK:
                 JOBS[job_id] = {"state": "queued", "path": path, "cx": cx, "cy": cy,
                                 "r": r, "dish_mm": dish_mm,
                                 "steady": bool(body.get("steady")),
-                                "anchors": anchors, "log": []}
+                                "anchors": anchors, "manual": manual, "log": []}
             enqueue(job_id)
             return self.send(200, {"job": job_id})
 
@@ -445,7 +471,16 @@ def main():
         ) if os.path.isdir(d)]
     os.makedirs(UPLOADS, exist_ok=True)
     os.makedirs(REPLAYS, exist_ok=True)
-    threading.Thread(target=worker, daemon=True).start()
+    # One worker by default: the tracker already uses every core, so a second
+    # job in parallel finishes both later. More is worth it only locally, when
+    # several dishes are being worked through at once and each is mostly idle
+    # waiting on the operator.
+    n_workers = 1
+    if "--workers" in sys.argv:
+        n_workers = max(1, min(8, int(sys.argv[sys.argv.index("--workers") + 1])))
+    for _ in range(n_workers):
+        threading.Thread(target=worker, daemon=True).start()
+    print("%d worker(s)" % n_workers)
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print("larvatrack  ->  http://localhost:%d   (one larva per dish)" % PORT)
     if LOCAL:

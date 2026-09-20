@@ -485,6 +485,114 @@ def replay(video, dish_mm, circle, out, every=EVERY_S, larvae=1, steady=False,
     return out
 
 
+def manual_paths(dish_mm, circle, anchors, log=print):
+    """Hand-traced path length per animal, for a plate holding several.
+
+    Each clicked point carries which larva it belongs to, so five animals can be
+    followed in one pass through the clip rather than five. Identity comes from
+    the operator, which is the one source that does not lose track of an animal
+    when two of them cross.
+    """
+    by = {}
+    for a in anchors:
+        by.setdefault(int(a[3]) if len(a) > 3 else 1, []).append(a[:3])
+    out = {}
+    for larva in sorted(by):
+        mm, pts = manual_path(dish_mm, circle, by[larva], log=lambda *x: None)
+        out[larva] = mm
+        log("larva %d: %6.1f mm from %d point(s)" % (larva, mm, len(pts)))
+    log("PATH total %.1f mm across %d larva(e)" % (sum(out.values()), len(out)))
+    return out
+
+
+def manual_path(dish_mm, circle, anchors, log=print):
+    """Path length from points the operator clicked, in time order.
+
+    For clips the tracker cannot do honestly - too little contrast, a larva that
+    sits on a yeast spot, debris it will not stop grabbing. A person scrubbing
+    the clip and clicking the animal is slower but it is real data, and it beats
+    a confident wrong number.
+
+    Straight lines between clicks, so this is a lower bound like everything else
+    here: click more often through a turn and it gets closer to the truth.
+    """
+    pts = sorted(to_crop(anchors, circle), key=lambda p: p[0])
+    mpp = dish_mm / (2.0 * circle[2])
+    total = 0.0
+    for (t0, x0, y0), (t1, x1, y1) in zip(pts, pts[1:]):
+        total += math.hypot(x1 - x0, y1 - y0) * mpp
+    if pts:
+        log("hand-traced %d point(s) from %.1fs to %.1fs"
+            % (len(pts), pts[0][0], pts[-1][0]))
+        log("PATH %.1f mm (straight between clicks, so a lower bound)" % total)
+    return total, pts
+
+
+def manual_replay(video, dish_mm, circle, anchors, out, size=720, log=print):
+    """The hand-traced paths drawn in, one colour per animal."""
+    groups = {}
+    for a in anchors:
+        groups.setdefault(int(a[3]) if len(a) > 3 else 1, []).append(a[:3])
+    tracks = {k: sorted(to_crop(v, circle), key=lambda p: p[0])
+              for k, v in groups.items()}
+    pts = sorted([p for v in tracks.values() for p in v], key=lambda p: p[0])
+    if len(pts) < 2:
+        raise NoLarva("hand tracing needs at least two points")
+    mpp = dish_mm / (2.0 * circle[2])
+    cx, cy, r = circle
+    side = int(2 * r)
+    scale = size / float(side)
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise NoLarva("ffmpeg is needed to write the replay")
+    proc = subprocess.Popen(
+        [ff, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+         "-s", "%dx%d" % (size, size), "-r", "6", "-i", "-", "-c:v", "libx264",
+         "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+         "-movflags", "+faststart", out],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    cap = cv2.VideoCapture(video)
+    try:
+        for i in range(len(pts)):
+            t = pts[i][0]
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+            ok, f = cap.read()
+            if not ok:
+                break
+            img = cv2.merge([_crop(c, int(cx - r), int(cy - r), side)
+                             for c in cv2.split(f)])
+            img = cv2.resize(img, (size, size))
+            cols = [(0, 0, 255), (0, 200, 255), (0, 255, 0), (255, 0, 255),
+                    (255, 200, 0)]
+            total = 0.0
+            for n, (larva, tr) in enumerate(sorted(tracks.items())):
+                upto = [p for p in tr if p[0] <= t]
+                total += sum(math.hypot(upto[k + 1][1] - upto[k][1],
+                                        upto[k + 1][2] - upto[k][2]) * mpp
+                             for k in range(len(upto) - 1))
+                if len(upto) < 2:
+                    continue
+                xy = np.array([[p[1] * scale, p[2] * scale] for p in upto])
+                col = cols[n % len(cols)]
+                cv2.polylines(img, [xy.astype(np.int32)], False, col, 2)
+                cv2.circle(img, tuple(xy[-1].astype(int)), 5, col, -1)
+            tag = "%5.1fs   %.1f mm" % (t, total)
+            if len(tracks) > 1:
+                tag += "  total of %d  (hand-traced)" % len(tracks)
+            else:
+                tag += "  (hand-traced)"
+            cv2.putText(img, tag, (12, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 230, 255), 2)
+            proc.stdin.write(img.tobytes())
+    finally:
+        cap.release()
+        proc.stdin.close()
+        if proc.wait() != 0:
+            raise NoLarva("ffmpeg failed: " + proc.stderr.read().decode()[-300:])
+    log("wrote %s" % out)
+    return out
+
+
 def self_check():
     """A synthetic larva on a known path, broken into fragments the way the real
     detector breaks.  A gap against the wall is bridged round it and should come
@@ -584,6 +692,23 @@ def self_check():
     assert feature_px(300) == 7, feature_px(300)
     assert all(feature_px(p) % 2 == 1 and feature_px(p) >= 3
                for p in (10, 50, 95, 300, 600, 1200))
+
+    # Hand tracing: three clicks 100px apart on a 600px/100mm plate is 100/6 mm
+    # per leg, and the total must not depend on the order they were clicked in.
+    circ = (400.0, 400.0, 300.0)
+    a = [(0.0, 400.0, 400.0), (2.0, 500.0, 400.0), (4.0, 500.0, 500.0)]
+    mm, _ = manual_path(100.0, circ, a, log=lambda *x: None)
+    assert abs(mm - 2 * 100 * (100.0 / 600.0)) < 1e-6, mm
+    mm2, _ = manual_path(100.0, circ, list(reversed(a)), log=lambda *x: None)
+    assert abs(mm - mm2) < 1e-9, (mm, mm2)
+
+    # Two animals traced in one pass must not have their points joined together.
+    two = [(0.0, 400.0, 400.0, 1), (2.0, 500.0, 400.0, 1),
+           (0.0, 400.0, 600.0, 2), (2.0, 400.0, 700.0, 2)]
+    per = manual_paths(100.0, circ, two, log=lambda *x: None)
+    assert set(per) == {1, 2}, per
+    leg = 100 * (100.0 / 600.0)
+    assert abs(per[1] - leg) < 1e-6 and abs(per[2] - leg) < 1e-6, per
 
     print("self-check ok (wall gap within %.1f%%, mid-dish chord is a lower bound)"
           % (err * 100))
