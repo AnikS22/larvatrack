@@ -31,6 +31,7 @@ import tptrack
 HERE = os.path.dirname(os.path.abspath(__file__))
 UPLOADS = os.path.join(HERE, "uploads")
 REPLAYS = os.path.join(HERE, "replays")
+RESULTS = os.path.join(HERE, "results")
 PORT = 8020
 # The page may be served from Vercel while the work happens here, so the browser
 # calls this server cross-origin. Nothing here is private to a user and there is
@@ -139,13 +140,28 @@ def run_job(job_id):
             # trajectory picking - the operator has already decided where the
             # animal was, and the job is only to add the distance up.
             per = tptrack.manual_paths(job["dish_mm"], circle, anchors, log=log)
-            tptrack.manual_replay(job["path"], job["dish_mm"], circle, anchors,
-                                  out, log=log)
             total = sum(per.values())
+            # Written to disk the moment it is computed. A tab was closed once
+            # and took an afternoon of tracing with it; the numbers are cheap to
+            # store and the tracing is not.
+            rec = {"saved": time.strftime("%Y-%m-%d %H:%M:%S"),
+                   "video": os.path.basename(job["path"]),
+                   "circle": [circle[0], circle[1], circle[2]],
+                   "dish_mm": job["dish_mm"], "method": "hand-traced",
+                   "per_larva_mm": {str(k): round(v, 1) for k, v in per.items()},
+                   "per_larva_cm": {str(k): round(v / 10.0, 3) for k, v in per.items()},
+                   "plate_total_mm": round(total, 1),
+                   "points": len(anchors),
+                   "anchors": [list(a) for a in anchors]}
+            os.makedirs(RESULTS, exist_ok=True)
+            fp = os.path.join(RESULTS, job_id + ".json")
+            with open(fp, "w") as fh:
+                json.dump(rec, fh, indent=1)
+            log("saved %s" % fp)
             job.update(state="done", mm=round(total, 1), seen=round(total, 1),
-                       bridged=0.0, manual=True,
+                       bridged=0.0, manual=True, saved_to=fp,
                        per_larva={str(k): round(v, 1) for k, v in per.items()},
-                       replay="/replay?id=" + job_id)
+                       per_larva_cm={str(k): round(v / 10.0, 3) for k, v in per.items()})
             return
         if not trs:
             raise tptrack.NoLarva(
@@ -493,7 +509,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 anchors = [(float(a["t"]), float(a["x"]), float(a["y"]),
                             int(a.get("larva", 1)))
-                           for a in (body.get("anchors") or [])][:2000]
+                           # 0.4s sampling over a 5-minute plate is ~750 points
+                           # per animal; five of them need room, and a silent
+                           # truncation here would quietly shorten a path.
+                           for a in (body.get("anchors") or [])][:8000]
             except (KeyError, TypeError, ValueError):
                 return self.fail(400, "a correction is missing t, x or y")
             manual = bool(body.get("manual"))
@@ -525,6 +544,7 @@ def main():
         ) if os.path.isdir(d)]
     os.makedirs(UPLOADS, exist_ok=True)
     os.makedirs(REPLAYS, exist_ok=True)
+    os.makedirs(RESULTS, exist_ok=True)
     # One worker by default: the tracker already uses every core, so a second
     # job in parallel finishes both later. More is worth it only locally, when
     # several dishes are being worked through at once and each is mostly idle

@@ -59,6 +59,54 @@ Regenerate with `.venv-track/bin/python make_figures.py` and
 You get back the path length and the replay above, so you can see whether it
 followed the larva or a speck of agar.
 
+## Two ways to measure
+
+**Automatic** — for a plate with one larva that stands out from the agar. Pick the
+plate, give the diameter, press Measure. Works well on plain agar (validated to
+−0.6% against a known path), and reports a lower bound because time the animal
+was invisible contributes nothing.
+
+**Hand-traced** — for everything automatic tracking cannot do honestly: several
+larvae in a plate, a larva parked on a yeast spot, or a clip where the detector
+keeps grabbing debris. You follow each animal with the pointer while the plate
+plays back fast. It is slower to run and far more reliable, because identity
+comes from the person watching, and a person does not lose an animal when two of
+them cross.
+
+Use hand-tracing whenever the automatic replay shows the path on the wrong thing.
+Do not average the two — record which was used (the results file has a `method`
+column) so a number can always be traced back to how it was obtained.
+
+### Automatic, step by step
+
+1. Pick a clip (a file already on this machine needs no upload).
+2. Click an auto-detected plate, or drag across one to set it by hand.
+3. Enter the plate diameter in mm. Everything is scaled from this.
+4. **Measure the path.** The replay shows the path being walked — watch it.
+5. If it followed the wrong thing, scrub to that moment, click the real larva,
+   and **Re-measure with corrections**. Each pin overrules the tracker.
+
+### Hand-traced, step by step
+
+1. Pick the clip and set the plate as above.
+2. **Follow with the mouse** — this takes over the full screen.
+3. Choose a speed (20× by default; 300 s of plate becomes a smooth 15 s).
+4. **Click the larva you want to follow.** That click is the path's first point,
+   so the pointer's travel to it is not counted as distance.
+5. After the 3-2-1 countdown, keep the pointer on that animal until the clip ends.
+6. It saves and arms the next larva without leaving full screen. Previous
+   starting points are marked and numbered so the same animal is not followed
+   twice.
+7. **Save hand-traced path(s)** when all animals are done. A JSON lands in
+   `results/` with per-animal lengths and every clicked coordinate.
+
+Keys while following: `1`–`5` switch animal, `space` pauses, `esc` closes.
+
+The clip is re-encoded at the chosen speed rather than played faster, because a
+browser asked for playbackRate 10 drops the frames it cannot decode in time and
+the plate visibly jumps — which is exactly what a pointer cannot follow. Recorded
+times are scaled back to real seconds, so 10× and 20× give the same answer.
+
 ## Running it
 
 The measurement needs `trackpy`, hence a separate environment:
