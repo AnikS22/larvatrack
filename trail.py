@@ -85,6 +85,7 @@ def measure(video, dish_mm, circle, every=5.0, edge=0.88, max_width_mm=2.5, log=
     if len(frames) < 3:
         raise lt.TrackingError("not enough frames")
 
+    frames = [f for f in frames if f.shape == frames[0].shape]
     mask = np.zeros(frames[0].shape, np.uint8)
     cv2.circle(mask, (int(cx - ox), int(cy - oy)), int(r * edge), 255, -1)
     acc = np.zeros(frames[0].shape, np.uint8)
@@ -144,3 +145,106 @@ def self_check():
 
 if __name__ == "__main__":
     self_check()
+
+
+def replay(video, dish_mm, circle, out, every=5.0, show_step=1.0, edge=0.88,
+           max_width_mm=2.5, threshold=None, log=print):
+    """Render the dish with its trail painting itself as the clip plays.
+
+    Each output frame compares now against `every` seconds ago, so you watch the
+    trail accumulate the same way the measurement builds it - the animal moving,
+    the line growing behind it, and the running total climbing.
+    """
+    import shutil, subprocess
+    cap = cv2.VideoCapture(video)
+    if not cap.isOpened():
+        raise lt.TrackingError(f"cannot open {video!r}")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    dur = (cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) / max(fps, 1e-6)
+    cx, cy, r = circle
+    ox, oy = max(0, int(cx - r)), max(0, int(cy - r))
+    side = int(2 * r)
+    mpp = dish_mm / (2 * r)
+    size = 720
+
+    grab = {}
+    def at(t):
+        k = round(t, 2)
+        if k not in grab:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(k * fps)))
+            ok, f = cap.read()
+            grab[k] = f[oy:oy + side, ox:ox + side] if ok else None
+        return grab[k]
+
+    # The dish can hang off an edge of the frame, so the crop is not always the
+    # square we asked for. Take the shape from a real frame.
+    first = at(0.0)
+    if first is None:
+        raise lt.TrackingError("could not read the first frame")
+    ch, cw = first.shape[:2]
+    mask = np.zeros((ch, cw), np.uint8)
+    cv2.circle(mask, (int(cx - ox), int(cy - oy)), int(r * edge), 255, -1)
+    acc = np.zeros((ch, cw), np.uint8)
+
+    if threshold is None:
+        threshold = measure(video, dish_mm, circle, every=every, edge=edge,
+                            max_width_mm=max_width_mm, log=lambda *a: None)["threshold"]
+        log(f"using the measurement's threshold ({threshold})")
+
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise lt.TrackingError("ffmpeg is needed to write the replay")
+    proc = subprocess.Popen(
+        [ff, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+         "-s", f"{size}x{size}", "-r", "20", "-i", "-", "-c:v", "libx264",
+         "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+         "-movflags", "+faststart", out],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    n = 0
+    thr_final = None
+    t = 0.0
+    while t < dur:
+        now = at(t)
+        past = at(max(0.0, t - every))
+        if now is None or past is None:
+            break
+        a = cv2.cvtColor(now, cv2.COLOR_BGR2GRAY)
+        b = cv2.cvtColor(past, cv2.COLOR_BGR2GRAY)
+        d = cv2.absdiff(cv2.GaussianBlur(a, (0, 0), 2), cv2.GaussianBlur(b, (0, 0), 2))
+        acc = cv2.max(acc, cv2.bitwise_and(d, mask))
+
+        # Use the threshold the measurement settled on. Recomputing it per frame
+        # made the video disagree with the number it was supposed to illustrate -
+        # 10 mm on screen against 46 mm measured, on the same clip.
+        thr = threshold
+        bw = (acc > thr).astype(np.uint8) * 255
+        bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        total, keep, _drop, lab = pieces_of(bw, mpp, max_width_mm)
+        shown = np.zeros_like(bw)
+        for p in keep:
+            shown[lab == p["label"]] = 255
+        thr_final = thr
+
+        sc = size / float(cw)
+        im = cv2.resize(now, (size, size))
+        paint = cv2.resize(shown, (size, size), interpolation=cv2.INTER_NEAREST)
+        im[paint > 0] = (0.25 * im[paint > 0] + 0.75 * np.array([60, 60, 255])).astype(np.uint8)
+        cv2.ellipse(im, (int((cx - ox) * size / cw), int((cy - oy) * size / ch)),
+                    (int(r * edge * size / cw), int(r * edge * size / ch)),
+                    0, 0, 360, (120, 120, 120), 1)
+        cv2.putText(im, f"{t:5.0f}s", (size - 96, 30), cv2.FONT_HERSHEY_SIMPLEX, .7,
+                    (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(im, f"trail {total:6.1f} mm", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, .7,
+                    (60, 60, 255), 2, cv2.LINE_AA)
+        proc.stdin.write(im.tobytes())
+        n += 1
+        t += show_step
+    cap.release()
+    proc.stdin.close()
+    err = proc.stderr.read().decode()[-300:]
+    if proc.wait() != 0:
+        raise lt.TrackingError(f"ffmpeg failed: {err}")
+    log(f"wrote {out} ({n} frames, threshold ended at {thr_final})")
+    return out
