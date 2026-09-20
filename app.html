@@ -6,6 +6,9 @@
 :root{--ground:#14161a;--panel:#1c2026;--sunk:#23282f;--line:#333a44;
       --ink:#e8ecf1;--dim:#9aa5b1;--accent:#ffd24a;--good:#5fd38d;--bad:#ff6b6b}
 *{box-sizing:border-box}
+/* An author "display:block" outranks the browser's [hidden]{display:none} no
+   matter the specificity, so anything hidden here must say so explicitly. */
+[hidden]{display:none!important}
 body{margin:0;background:var(--ground);color:var(--ink);
      font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
 .wrap{max-width:1040px;margin:0 auto;padding:26px 18px 70px}
@@ -30,7 +33,10 @@ button.ghost{background:transparent;color:var(--dim);border-color:var(--line);fo
 .dishbtns button{width:auto;padding:6px 11px;font-size:13px;background:var(--sunk);
   color:var(--ink);border-color:var(--line);font-weight:400}
 .dishbtns button.on{background:var(--accent);color:#14161a;border-color:var(--accent)}
-.stage{position:relative;background:#000;border-radius:10px;overflow:hidden;min-height:180px}
+.stage{background:#000;border-radius:10px;overflow:hidden;min-height:180px}
+/* The overlay is sized against the frame alone. Anchored to the stage it also
+   covered whatever else was in there and drew the dish as a stretched ellipse. */
+#framewrap{position:relative;display:block;line-height:0}
 #shot{display:block;width:100%;cursor:crosshair;user-select:none;-webkit-user-drag:none}
 #ov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 video{display:block;width:100%;border-radius:10px;background:#000}
@@ -69,8 +75,10 @@ a{color:var(--accent)}
   <div class="cols">
     <div class="card">
       <div class="stage">
-        <img id="shot" alt="a frame from the clip — drag across the dish to set it">
-        <canvas id="ov"></canvas>
+        <div id="framewrap">
+          <img id="shot" alt="a frame from the clip — drag across the dish to set it">
+          <canvas id="ov"></canvas>
+        </div>
         <video id="rep" controls loop playsinline hidden></video>
       </div>
       <p class="note" id="stagenote">Pick a video file to begin.</p>
@@ -152,6 +160,10 @@ health();
 
 function step(n){ for(let i=1;i<=4;i++) $('s'+i).classList.toggle('on', i<=n); }
 
+// The frame and the replay share the stage; exactly one of them is up.
+function showFrame(){ $('framewrap').hidden = false; $('rep').hidden = true; }
+function showReplay(){ $('framewrap').hidden = true;  $('rep').hidden = false; }
+
 function draw(){
   const c=$('ov'), img=$('shot');
   if(!img.naturalWidth) return;
@@ -216,7 +228,7 @@ async function uploadFile(f){
 $('file').onchange = async e => {
   const f = e.target.files[0]; if(!f) return;
   $('bar').style.width = '0%'; $('barwrap').hidden = false;
-  $('rep').hidden = true; $('shot').hidden = false; $('result').style.display='none';
+  showFrame(); $('result').style.display='none';
   try{
     up = await uploadFile(f);
     const j = up;
@@ -307,8 +319,7 @@ async function check(id){
     $('detail').textContent = `${j.seen} mm seen + ${j.bridged} mm bridged across gaps. `
       + `This is a lower bound — time the larva was invisible is not counted.`;
     const v = $('rep');
-    v.src = await blobURL(j.replay); v.hidden = false; $('shot').hidden = true;
-    $('ov').getContext('2d').clearRect(0,0,$('ov').width,$('ov').height);
+    v.src = await blobURL(j.replay); showReplay();
     $('stagenote').textContent = 'Replay: the path being drawn as it was walked. '
       + 'If it followed the wrong thing, you will see it here.';
     v.play().catch(()=>{});
