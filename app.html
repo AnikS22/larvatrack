@@ -1,0 +1,279 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>larvatrack — one larva, one dish</title>
+<style>
+:root{--ground:#14161a;--panel:#1c2026;--sunk:#23282f;--line:#333a44;
+      --ink:#e8ecf1;--dim:#9aa5b1;--accent:#ffd24a;--good:#5fd38d;--bad:#ff6b6b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);
+     font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:1040px;margin:0 auto;padding:26px 18px 70px}
+h1{font-size:23px;margin:0 0 4px} h1 span{color:var(--accent)}
+.sub{color:var(--dim);margin:0 0 18px;max-width:64ch}
+.solo{background:#2a2410;border:1px solid #5c4c14;color:#ffdf8a;
+      padding:9px 13px;border-radius:9px;margin:0 0 18px;font-size:14px}
+.cols{display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start}
+@media(max-width:860px){.cols{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+fieldset{border:1px solid var(--line);border-radius:10px;padding:13px;margin:0 0 14px}
+fieldset[disabled]{opacity:.45}
+legend{color:var(--accent);font-size:12px;letter-spacing:.09em;text-transform:uppercase;padding:0 6px}
+label{display:block;font-size:13px;color:var(--dim);margin:0 0 9px}
+input[type=number],input[type=file]{width:100%;margin-top:5px;padding:8px;background:var(--sunk);
+  color:var(--ink);border:1px solid var(--line);border-radius:7px;font:inherit}
+button{width:100%;padding:11px;border-radius:8px;border:1px solid var(--accent);
+  background:var(--accent);color:#14161a;font:600 15px/1 inherit;cursor:pointer}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.ghost{background:transparent;color:var(--dim);border-color:var(--line);font-weight:400}
+.dishbtns{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}
+.dishbtns button{width:auto;padding:6px 11px;font-size:13px;background:var(--sunk);
+  color:var(--ink);border-color:var(--line);font-weight:400}
+.dishbtns button.on{background:var(--accent);color:#14161a;border-color:var(--accent)}
+.stage{position:relative;background:#000;border-radius:10px;overflow:hidden;min-height:180px}
+#shot{display:block;width:100%;cursor:crosshair;user-select:none;-webkit-user-drag:none}
+#ov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+video{display:block;width:100%;border-radius:10px;background:#000}
+.note{color:var(--dim);font-size:13px;margin:9px 0 0}
+.steps{list-style:none;padding:0;margin:0 0 16px;display:flex;gap:8px;flex-wrap:wrap;font-size:13px}
+.steps li{color:var(--dim);background:var(--sunk);border:1px solid var(--line);
+  padding:5px 11px;border-radius:99px}
+.steps li.on{color:var(--accent);border-color:var(--accent)}
+.big{font-size:34px;font-weight:700;color:var(--good);margin:2px 0}
+.mono{font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim);
+  white-space:pre-wrap;max-height:190px;overflow:auto;background:var(--sunk);
+  border:1px solid var(--line);border-radius:8px;padding:9px;margin-top:11px}
+.err{color:var(--bad)}
+a{color:var(--accent)}
+</style>
+
+<div class="wrap">
+  <h1>larva<span>track</span></h1>
+  <p class="sub">Upload a clip, say which dish to look in and how wide it is, and get how far
+    the larva crawled — with a replay so you can check it followed the right animal.</p>
+  <p class="solo"><b>One larva at a time.</b> This measures a single animal per run. A dish with
+    several larvae in it will report whichever one it followed longest, not all of them.</p>
+  <p class="note" style="margin:-8px 0 16px">Clips are measured on one lab laptop, one at a
+    time. Upload whenever you like — if someone is ahead of you, yours waits its turn and
+    you will be told where you are in the queue.</p>
+
+  <ul class="steps">
+    <li id="s1" class="on"><b>1</b> Upload a clip</li>
+    <li id="s2"><b>2</b> Crop to the dish</li>
+    <li id="s3"><b>3</b> Dish diameter</li>
+    <li id="s4"><b>4</b> Measure</li>
+  </ul>
+
+  <div class="cols">
+    <div class="card">
+      <div class="stage">
+        <img id="shot" alt="a frame from the clip — drag across the dish to set it">
+        <canvas id="ov"></canvas>
+        <video id="rep" controls loop playsinline hidden></video>
+      </div>
+      <p class="note" id="stagenote">Pick a video file to begin.</p>
+    </div>
+
+    <div>
+      <div class="card">
+        <fieldset>
+          <legend>1 — clip</legend>
+          <label>Video file<input type="file" id="file" accept="video/*"></label>
+          <p class="note" id="upnote">MP4 or MOV, straight off the phone.</p>
+        </fieldset>
+
+        <fieldset id="fs2" disabled>
+          <legend>2 — dish</legend>
+          <p class="note" style="margin:0">Click an auto-detected dish, or drag across the
+            dish on the frame to set it by hand.</p>
+          <div class="dishbtns" id="dishbtns"></div>
+          <p class="note" id="dishnote">—</p>
+        </fieldset>
+
+        <fieldset id="fs3" disabled>
+          <legend>3 — size &amp; run</legend>
+          <label>Dish diameter (mm)
+            <input type="number" id="dish" value="100" min="5" max="500" step="0.5"></label>
+          <label style="display:flex;gap:8px;align-items:center;margin-top:2px">
+            <input type="checkbox" id="steady" style="width:auto;margin:0">
+            <span>Camera moved during filming</span></label>
+          <button id="go" disabled>Measure the path</button>
+          <p class="note">Takes a minute or two for a 5-minute clip.</p>
+        </fieldset>
+      </div>
+
+      <div class="card" id="result" style="margin-top:16px;display:none">
+        <div style="color:var(--dim);font-size:13px">Path length</div>
+        <div class="big" id="mm">—</div>
+        <div class="note" id="detail"></div>
+        <div class="mono" id="log"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let up = null, circle = null, drag = null, poll = null;
+
+// Where the work happens. Served from this machine, BACKEND is the same origin;
+// served from Vercel, a deploy-time script points it at the laptop's tunnel, and
+// ?backend=... overrides both so a moved tunnel needs no redeploy.
+const BACKEND = new URLSearchParams(location.search).get('backend')
+  || window.BACKEND_URL || location.origin;
+// ngrok shows an interstitial to anything that looks like a browser unless this
+// header is set - which <img src> and <video src> cannot do, hence the blobs.
+const HDRS = {'ngrok-skip-browser-warning': '1'};
+const api = (p, o={}) => fetch(BACKEND + p, {...o, headers:{...HDRS, ...(o.headers||{})}});
+async function blobURL(p){
+  const r = await api(p);
+  if(!r.ok) throw new Error('fetch failed: ' + r.status);
+  return URL.createObjectURL(await r.blob());
+}
+
+async function health(){
+  try{
+    const j = await (await api('/health')).json();
+    const busy = j.queued + j.running;
+    $('upnote').textContent = busy
+      ? `connected — ${busy} clip(s) already in the queue`
+      : 'connected — MP4 or MOV, straight off the phone.';
+    return true;
+  }catch(e){
+    $('upnote').innerHTML = '<span class="err">The machine that does the measuring '
+      + 'is offline. It has to be awake and running for uploads to work.</span>';
+    return false;
+  }
+}
+health();
+
+function step(n){ for(let i=1;i<=4;i++) $('s'+i).classList.toggle('on', i<=n); }
+
+function draw(){
+  const c=$('ov'), img=$('shot');
+  if(!img.naturalWidth) return;
+  c.width=img.naturalWidth; c.height=img.naturalHeight;
+  const g=c.getContext('2d');
+  g.clearRect(0,0,c.width,c.height);
+  if(!circle) return;
+  g.strokeStyle='#ffd24a'; g.lineWidth=Math.max(3, c.width/380);
+  g.beginPath(); g.arc(circle.cx,circle.cy,circle.r,0,7); g.stroke();
+}
+
+function setCircle(c, how){
+  circle = c;
+  $('dishnote').textContent = c
+    ? `dish at ${Math.round(c.cx)},${Math.round(c.cy)} radius ${Math.round(c.r)}px (${how})`
+    : '—';
+  $('fs3').disabled = !c;
+  $('go').disabled = !c;
+  step(c ? 3 : 2);
+  draw();
+}
+
+// ---- upload ----
+$('file').onchange = async e => {
+  const f = e.target.files[0]; if(!f) return;
+  $('upnote').textContent = `uploading ${(f.size/1048576).toFixed(0)} MB…`;
+  $('rep').hidden = true; $('shot').hidden = false; $('result').style.display='none';
+  try{
+    const r = await api('/upload', {method:'POST', body:f,
+      headers:{'X-Filename': f.name}});
+    const j = await r.json();
+    if(j.error) throw new Error(j.error);
+    up = j;
+    $('shot').onload = () => { draw(); };
+    $('shot').src = await blobURL(`/frame?id=${encodeURIComponent(j.id)}&t=0`);
+    $('upnote').textContent = `${j.w}×${j.h}, ${j.dur}s`;
+    $('fs2').disabled = false;
+    $('stagenote').textContent = 'Drag across the dish to set it, or use a button on the right.';
+    const bb = $('dishbtns'); bb.innerHTML='';
+    (j.dishes||[]).forEach((d,i) => {
+      const b=document.createElement('button');
+      b.textContent = `dish ${i+1} (r${Math.round(d.r)})`;
+      b.onclick = () => {
+        [...bb.children].forEach(x=>x.classList.remove('on'));
+        b.classList.add('on'); setCircle({cx:d.cx,cy:d.cy,r:d.r}, 'auto-detected');
+      };
+      bb.appendChild(b);
+    });
+    if(!(j.dishes||[]).length) bb.innerHTML =
+      '<span class="note">none found automatically — drag on the frame instead</span>';
+    step(2);
+  }catch(err){ $('upnote').innerHTML = `<span class="err">${err.message}</span>`; }
+};
+
+// ---- drag a dish by hand ----
+function at(e){
+  const img=$('shot'), b=img.getBoundingClientRect();
+  const p = e.touches ? e.touches[0] : e;
+  return {x:(p.clientX-b.left)*img.naturalWidth/b.width,
+          y:(p.clientY-b.top)*img.naturalHeight/b.height};
+}
+$('shot').addEventListener('pointerdown', e => {
+  if($('fs2').disabled) return;
+  e.preventDefault(); drag = at(e);
+});
+addEventListener('pointermove', e => {
+  if(!drag) return;
+  const p=at(e), dx=p.x-drag.x, dy=p.y-drag.y;
+  // Drag from one edge of the dish to the other: that span is the diameter.
+  circle = {cx:(drag.x+p.x)/2, cy:(drag.y+p.y)/2, r:Math.hypot(dx,dy)/2};
+  draw();
+});
+addEventListener('pointerup', () => {
+  if(!drag) return;
+  drag = null;
+  if(circle && circle.r >= 20){
+    [...$('dishbtns').children].forEach(x=>x.classList && x.classList.remove('on'));
+    setCircle(circle, 'drawn by hand');
+  } else setCircle(null);
+});
+
+// ---- measure ----
+$('go').onclick = async () => {
+  if(!up || !circle) return;
+  $('go').disabled = true; $('go').textContent = 'Measuring…';
+  $('result').style.display='block'; $('mm').textContent='—';
+  $('detail').textContent=''; $('log').textContent='queued…';
+  step(4);
+  const r = await api('/measure', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id:up.id, dish_mm:+$('dish').value, steady:$('steady').checked,
+                          cx:circle.cx, cy:circle.cy, r:circle.r})});
+  const j = await r.json();
+  if(j.error){ $('log').innerHTML=`<span class="err">${j.error}</span>`; reset(); return; }
+  clearInterval(poll);
+  poll = setInterval(() => check(j.job), 1500);
+  check(j.job);
+};
+
+function reset(){ $('go').disabled=false; $('go').textContent='Measure the path'; }
+
+async function check(id){
+  const j = await (await api('/job?id='+encodeURIComponent(id))).json();
+  if(j.state === 'queued'){
+    $('log').textContent = j.ahead
+      ? `waiting — ${j.ahead} clip(s) ahead of yours`
+      : 'waiting for a free worker…';
+    return;
+  }
+  $('log').textContent = (j.log||[]).join('\n') || j.state;
+  $('log').scrollTop = $('log').scrollHeight;
+  if(j.state === 'done'){
+    clearInterval(poll); reset();
+    $('mm').textContent = j.mm + ' mm';
+    $('detail').textContent = `${j.seen} mm seen + ${j.bridged} mm bridged across gaps. `
+      + `This is a lower bound — time the larva was invisible is not counted.`;
+    const v = $('rep');
+    v.src = await blobURL(j.replay); v.hidden = false; $('shot').hidden = true;
+    $('ov').getContext('2d').clearRect(0,0,$('ov').width,$('ov').height);
+    $('stagenote').textContent = 'Replay: the path being drawn as it was walked. '
+      + 'If it followed the wrong thing, you will see it here.';
+    v.play().catch(()=>{});
+  } else if(j.state === 'error'){
+    clearInterval(poll); reset();
+    $('mm').textContent = '—';
+    $('detail').innerHTML = `<span class="err">${j.error||'failed'}</span>`;
+  }
+}
+</script>

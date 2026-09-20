@@ -1,9 +1,0 @@
-[project]
-name = "larvatrack-web"
-version = "0.1.0"
-requires-python = ">=3.12"
-
-[tool.vercel]
-# api/_larvatrack.py is a library, not a route - the underscore keeps the runtime
-# from treating its HTTP handler (the local live-tracking server) as an entrypoint.
-entrypoint = "api.track:handler"

@@ -223,7 +223,8 @@ def chain(trs, circle, mpp):
     return seen, bridged, segs
 
 
-def measure(video, dish_mm, circle, every=EVERY_S, log=print, steady=False):
+def measure(video, dish_mm, circle, every=EVERY_S, log=print, steady=False,
+            trs=None):
     """Path length in mm.
 
     Reports the longest single trajectory as the headline figure, because that
@@ -234,7 +235,8 @@ def measure(video, dish_mm, circle, every=EVERY_S, log=print, steady=False):
     the gap to it is short enough to attribute (see MAX_GAP_S).
     """
     mpp = dish_mm / (2.0 * circle[2])
-    trs = trajectories(video, circle, every, mpp, log, steady)
+    if trs is None:
+        trs = trajectories(video, circle, every, mpp, log, steady)
     if not trs:
         log("no trajectories found")
         return 0.0, 0.0, 0.0
@@ -324,14 +326,16 @@ def overlay(video, circle, out, every=EVERY_S, mm_per_px=None, larvae=1,
 
 
 def replay(video, dish_mm, circle, out, every=EVERY_S, larvae=1, steady=False,
-           size=720, log=print):
+           size=720, log=print, trs=None):
     """Write the clip back out with each path drawn in as it is walked.
 
     Same trajectories the measurement uses - this is the measurement being shown,
     not a second guess at it, so what is on screen is what got counted.
     """
     mpp = dish_mm / (2.0 * circle[2])
-    kept = trajectories(video, circle, every, mpp, log, steady)
+    # Detection and linking is the slow half; reuse it when the caller has it.
+    kept = trajectories(video, circle, every, mpp, log, steady) if trs is None \
+        else list(trs)
     if not kept:
         raise SystemExit("no trajectories to replay")
     if larvae == 1:

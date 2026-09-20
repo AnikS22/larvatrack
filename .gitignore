@@ -1,13 +1,21 @@
+# clips are symlinks into a local Downloads folder - useless to anyone else
+clips/
+# what people upload, and what comes back out
+uploads/
+replays/
+recordings/
+# generated at deploy time from app.html
+site/
 # run outputs
 run_*.csv
 run_*.png
 run_*.mp4
 run_*.webm
-# scratch capture from the lock button
 lock_debug.png
 __pycache__/
 .DS_Store
-uploads/
+.venv-track/
 web/node_modules/
 web/.vercel/
 web/.env.local
+.vercel/
