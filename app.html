@@ -50,6 +50,30 @@ video{display:block;width:100%;border-radius:10px;background:#000}
   white-space:pre-wrap;max-height:190px;overflow:auto;background:var(--sunk);
   border:1px solid var(--line);border-radius:8px;padding:9px;margin-top:11px}
 .err{color:var(--bad)}
+#fullfollow{position:fixed;inset:0;background:#000;z-index:999;display:flex;
+  flex-direction:column}
+#fstage{flex:1;position:relative;display:flex;align-items:center;justify-content:center;
+  min-height:0}
+#follow{max-width:100%;max-height:100%;height:100%;object-fit:contain;cursor:crosshair;
+  display:block}
+#fov{position:absolute;pointer-events:none}
+#fmsg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  flex-direction:column;gap:10px;pointer-events:none;text-align:center;
+  font:600 30px/1.3 ui-sans-serif,system-ui;color:#fff;text-shadow:0 2px 14px #000}
+#fmsg .count{font-size:130px;line-height:1;color:var(--accent)}
+#fmsg small{font-size:17px;font-weight:400;color:#d6dde6}
+#fbar{display:flex;gap:16px;align-items:center;justify-content:space-between;
+  padding:10px 16px;background:var(--panel);border-top:1px solid var(--line);flex-wrap:wrap}
+#fbar .fgrp{display:flex;gap:9px;align-items:center}
+#fbar label{margin:0;display:flex;gap:6px;align-items:center}
+#fbar select{width:auto;padding:6px 8px;background:var(--sunk);color:var(--ink);
+  border:1px solid var(--line);border-radius:7px;font:inherit}
+#fbar button{width:auto;padding:8px 14px;font-size:14px}
+#flarvae{display:flex;gap:6px;flex-wrap:wrap}
+#flarvae button{width:auto;padding:7px 13px;font-size:14px;background:var(--sunk);
+  color:var(--ink);border:2px solid var(--line);font-weight:600}
+#ftotal{font:600 17px/1 ui-monospace,Menlo,monospace;color:var(--good);min-width:210px;
+  text-align:right}
 #barwrap{height:6px;background:var(--sunk);border-radius:99px;overflow:hidden;margin-top:9px}
 #bar{height:100%;width:0;background:var(--accent);transition:width .25s}
 a{color:var(--accent)}
@@ -80,12 +104,7 @@ a{color:var(--accent)}
           <canvas id="ov"></canvas>
         </div>
         <video id="rep" controls loop playsinline hidden></video>
-        <div id="followwrap" hidden style="position:relative;line-height:0">
-          <video id="follow" playsinline muted
-                 style="display:block;width:100%;cursor:crosshair"></video>
-          <canvas id="fov" style="position:absolute;inset:0;width:100%;height:100%;
-                  pointer-events:none"></canvas>
-        </div>
+
       </div>
       <p class="note" id="stagenote">Pick a video file to begin.</p>
     </div>
@@ -127,16 +146,8 @@ a{color:var(--accent)}
           </div>
           <button id="followbtn" type="button" style="margin-top:10px">
             Follow with the mouse</button>
-          <label style="margin-top:9px">Speed
-            <select id="rate">
-              <option value="2">2×</option>
-              <option value="4" selected>4×</option>
-              <option value="6">6×</option>
-              <option value="8">8×</option>
-              <option value="10">10×</option>
-            </select></label>
-          <p class="note" id="follownote" style="margin:0">Hold the pointer on one
-            larva while it plays. Space pauses.</p>
+          <p class="note" style="margin:0">Opens full screen. Keep the pointer on one
+            larva while it plays; 1–5 switches animal, space pauses, esc closes.</p>
           <div style="display:flex;gap:7px;margin-top:9px">
             <button class="ghost" id="stepback" type="button">◀ 2s</button>
             <button class="ghost" id="stepfwd" type="button">2s ▶</button>
@@ -166,6 +177,31 @@ a{color:var(--accent)}
         <div class="mono" id="log"></div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- Following happens full screen: the plate is ~600px in a 1920 frame, and in a
+     340px column a larva is a couple of pixels. -->
+<div id="fullfollow" hidden>
+  <div id="fstage">
+    <video id="follow" playsinline muted></video>
+    <canvas id="fov"></canvas>
+    <div id="fmsg"></div>
+  </div>
+  <div id="fbar">
+    <div id="flarvae"></div>
+    <div class="fgrp">
+      <label>speed
+        <select id="rate">
+          <option value="1">1×</option><option value="2">2×</option>
+          <option value="4">4×</option><option value="6">6×</option>
+          <option value="8">8×</option><option value="10" selected>10×</option>
+        </select></label>
+      <button id="fpause" class="ghost" type="button">Pause</button>
+      <button id="fstop" type="button">Stop &amp; keep</button>
+      <button id="fexit" class="ghost" type="button">Close</button>
+    </div>
+    <div id="ftotal">—</div>
   </div>
 </div>
 
@@ -264,12 +300,9 @@ health();
 function step(n){ for(let i=1;i<=4;i++) $('s'+i).classList.toggle('on', i<=n); }
 
 // The frame and the replay share the stage; exactly one of them is up.
-function showFrame(){ $('framewrap').hidden = false; $('rep').hidden = true;
-                     $('followwrap').hidden = true; }
-function showReplay(){ $('framewrap').hidden = true;  $('rep').hidden = false;
-                      $('followwrap').hidden = true; }
-function showFollow(){ $('framewrap').hidden = true;  $('rep').hidden = true;
-                      $('followwrap').hidden = false; }
+function showFrame(){ $('framewrap').hidden = false; $('rep').hidden = true; }
+function showReplay(){ $('framewrap').hidden = true;  $('rep').hidden = false; }
+
 
 function draw(){
   const c=$('ov'), img=$('shot');
@@ -500,97 +533,206 @@ const step2 = d => {
   $('scrub').value = String(t); seek(t);
 };
 // ---- follow a larva with the pointer while the clip plays ----
-// Clicking 150 frames per animal is the real cost of hand tracing. Playing the
-// dish back fast and keeping the pointer on one larva collects the same path in
-// the time the clip takes to run, and the pointer is already where the eye is.
-let following = false, fpts = [], fraf = 0, lastT = -1;
+// Clicking 150 frames per animal is the real cost of hand tracing. The pointer
+// is already where the eye is, so play the plate back fast and keep it on one
+// larva. Full screen, because in a sidebar column a larva is two pixels.
+let following = false, fpts = [], fraf = 0, lastT = -1, fmouse = null;
 
-async function loadFollow(){
-  if($('follow').src) return;
-  $('follownote').textContent = 'preparing the clip (a few seconds)…';
-  const u = `/clip?id=${encodeURIComponent(up.id)}&cx=${Math.round(circle.cx)}`
-          + `&cy=${Math.round(circle.cy)}&r=${Math.round(circle.r)}`;
-  $('follow').src = await blobURL(u);
-  $('follownote').textContent = 'Hold the pointer on one larva while it plays. Space pauses.';
+function fitCanvas(){
+  const v = $('follow'), c = $('fov');
+  if(!v.videoWidth) return null;
+  const b = v.getBoundingClientRect(), sb = $('fstage').getBoundingClientRect();
+  // The video letterboxes inside the stage; the canvas must sit on the picture,
+  // not on the black bars, or every recorded point is offset.
+  c.style.left = (b.left - sb.left) + 'px';
+  c.style.top  = (b.top  - sb.top)  + 'px';
+  c.style.width = b.width + 'px'; c.style.height = b.height + 'px';
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  return b;
 }
 
 function fdraw(){
-  const c = $('fov'), v = $('follow');
-  if(!v.videoWidth) return;
-  c.width = v.videoWidth; c.height = v.videoHeight;
+  const c = $('fov');
+  if(!fitCanvas()) return;
   const g = c.getContext('2d');
   g.clearRect(0,0,c.width,c.height);
+  const col = LCOL[(curLarva-1)%LCOL.length];
+
+  // While choosing, show where each previous run was started, so the same
+  // animal does not get followed twice and counted as two. These disappear once
+  // the clip is running - they mark frame 1 and would be stale after that.
+  if(fstate === 'await_click'){
+    const R = Math.max(12, c.width/40);
+    for(let i=1;i<=nLarvae;i++){
+      const mine = pins.filter(p => (p.larva||1) === i).sort((a,b)=>a.t-b.t);
+      if(!mine.length) continue;
+      const p = mine[0], lc = LCOL[(i-1)%LCOL.length];
+      g.strokeStyle = lc; g.lineWidth = Math.max(3, c.width/300);
+      g.beginPath(); g.arc(p.x, p.y, R, 0, 7); g.stroke();
+      g.beginPath(); g.moveTo(p.x-R*1.5, p.y); g.lineTo(p.x+R*1.5, p.y);
+      g.moveTo(p.x, p.y-R*1.5); g.lineTo(p.x, p.y+R*1.5); g.stroke();
+      g.font = `600 ${Math.max(16, c.width/28)}px ui-sans-serif,system-ui`;
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.lineWidth = Math.max(4, c.width/220); g.strokeStyle = '#000';
+      g.strokeText(String(i), p.x, p.y - R*2.1);
+      g.fillStyle = lc; g.fillText(String(i), p.x, p.y - R*2.1);
+    }
+  }
   if(fpts.length > 1){
-    g.strokeStyle = LCOL[(curLarva-1)%LCOL.length];
-    g.lineWidth = Math.max(2, c.width/300);
+    g.strokeStyle = col; g.lineWidth = Math.max(3, c.width/250);
     g.beginPath(); g.moveTo(fpts[0].x, fpts[0].y);
     fpts.slice(1).forEach(p => g.lineTo(p.x, p.y));
     g.stroke();
-    const last = fpts[fpts.length-1];
-    g.beginPath(); g.arc(last.x, last.y, Math.max(5,c.width/120), 0, 7); g.stroke();
+  }
+  if(fmouse){
+    g.strokeStyle = col; g.lineWidth = Math.max(2, c.width/400);
+    const R = Math.max(10, c.width/45);
+    g.beginPath(); g.arc(fmouse.x, fmouse.y, R, 0, 7); g.stroke();
   }
 }
 
-function fsample(){
-  const v = $('follow');
-  if(following && !v.paused && !v.ended){
-    // Sampled against VIDEO time, so the path does not depend on playback speed
-    // or on how smoothly the browser happens to be rendering.
-    if(v.currentTime - lastT >= 0.4 && window._fm){
-      fpts.push({t: v.currentTime, x: window._fm.x, y: window._fm.y});
-      lastT = v.currentTime;
-      fdraw(); updateFollowTotal();
-    }
+function flarvaButtons(){
+  const b = $('flarvae'); b.innerHTML = '';
+  for(let i=1;i<=nLarvae;i++){
+    const n = pins.filter(p => (p.larva||1) === i).length;
+    const btn = document.createElement('button');
+    btn.textContent = 'larva ' + i + (n ? ' ✓' : '');
+    btn.style.borderColor = LCOL[(i-1)%LCOL.length];
+    btn.style.background = i === curLarva ? LCOL[(i-1)%LCOL.length] : 'var(--sunk)';
+    btn.style.color = i === curLarva ? '#14161a' : 'var(--ink)';
+    btn.onclick = () => { if(following) keep(); curLarva = i; armRun(); };
+    b.appendChild(btn);
   }
-  fraf = requestAnimationFrame(fsample);
 }
 
-function updateFollowTotal(){
+function ftotal(){
   const mpp = (+$('dish').value || 100) / (2*circle.r);
   let mm = 0;
   for(let i=1;i<fpts.length;i++)
     mm += Math.hypot(fpts[i].x-fpts[i-1].x, fpts[i].y-fpts[i-1].y) * mpp;
-  $('follownote').innerHTML = `larva ${curLarva}: <b style="color:var(--good)">`
-    + `${mm.toFixed(1)} mm</b> — ${fpts.length} points, `
-    + `${$('follow').currentTime.toFixed(0)}s of ${($('follow').duration||0).toFixed(0)}s`;
+  const v = $('follow');
+  $('ftotal').textContent = `larva ${curLarva}  ${mm.toFixed(1)} mm  `
+    + `${v.currentTime.toFixed(0)}/${(v.duration||0).toFixed(0)}s`;
 }
 
-$('follow').addEventListener('pointermove', e => {
+function fsample(){
+  const v = $('follow');
+  if(following && !v.paused && !v.ended && fmouse
+     && v.currentTime - lastT >= 0.4){
+    // Sampled against VIDEO time, so the path does not depend on playback speed
+    // or on how smoothly the browser happens to render.
+    fpts.push({t: v.currentTime, x: fmouse.x, y: fmouse.y});
+    lastT = v.currentTime;
+  }
+  fdraw(); ftotal();
+  fraf = requestAnimationFrame(fsample);
+}
+
+let fstate = 'idle';          // idle -> await_click -> countdown -> running
+
+function fmsgHTML(html){ $('fmsg').innerHTML = html; }
+
+function armRun(){
+  // Paused on the first frame until the animal is pointed at. Starting blind
+  // means the first seconds are recorded from wherever the pointer happened to
+  // be, which quietly adds distance the larva never walked.
+  const v = $('follow');
+  fpts = []; lastT = -1; following = false; fstate = 'await_click';
+  v.pause(); v.currentTime = 0;
+  $('fpause').textContent = 'Pause';
+  flarvaButtons();
+  const done = pins.length ? [...new Set(pins.map(p => p.larva||1))].sort() : [];
+  fmsgHTML(`<div>Click larva ${curLarva} to start</div>`
+    + `<small>then follow it — the clip runs at ${$('rate').value}×`
+    + (done.length ? `<br>already started: ${done.join(', ')} (marked on the plate)`
+                   : '') + `</small>`);
+  cancelAnimationFrame(fraf); fsample();
+}
+
+function countdown(n){
+  fstate = 'countdown';
+  if(n === 0){
+    fmsgHTML('');
+    const v = $('follow');
+    following = true; fstate = 'running';
+    v.playbackRate = +$('rate').value;
+    v.play().catch(()=>{});
+    return;
+  }
+  fmsgHTML(`<div class="count">${n}</div><small>follow larva ${curLarva}</small>`);
+  setTimeout(() => countdown(n-1), 700);
+}
+
+function startRun(){ armRun(); }
+
+function keep(){
+  following = false; fstate = 'idle'; fmsgHTML(''); $('follow').pause();
+  pins = pins.filter(p => (p.larva||1) !== curLarva)
+             .concat(fpts.map(p => ({t:p.t, x:p.x, y:p.y, larva:curLarva})));
+  renderPins(); flarvaButtons();
+}
+
+async function loadFollow(){
+  if($('follow').src) return;
+  $('ftotal').textContent = 'preparing the clip…';
+  const u = `/clip?id=${encodeURIComponent(up.id)}&cx=${Math.round(circle.cx)}`
+          + `&cy=${Math.round(circle.cy)}&r=${Math.round(circle.r)}`;
+  $('follow').src = await blobURL(u);
+  await new Promise(r => $('follow').onloadedmetadata = r);
+}
+
+function atVideo(e){
   const b = e.target.getBoundingClientRect();
-  window._fm = {x: (e.clientX-b.left)*e.target.videoWidth/b.width,
-                y: (e.clientY-b.top)*e.target.videoHeight/b.height};
+  return {x: (e.clientX-b.left)*e.target.videoWidth/b.width,
+          y: (e.clientY-b.top)*e.target.videoHeight/b.height};
+}
+$('follow').addEventListener('pointermove', e => { fmouse = atVideo(e); });
+$('follow').addEventListener('pointerdown', e => {
+  if(fstate !== 'await_click') return;
+  e.preventDefault();
+  fmouse = atVideo(e);
+  fpts = [{t: 0, x: fmouse.x, y: fmouse.y}];   // where the animal actually starts
+  lastT = 0;
+  countdown(3);
 });
+$('follow').style.pointerEvents = 'auto';
+addEventListener('resize', () => { if(!$('fullfollow').hidden) fdraw(); });
 
 $('followbtn').onclick = async () => {
   if(!circle){ $('dishnote').textContent = 'set the dish first'; return; }
   if(!manual) setManual(true);
-  if(following){                       // stop and keep what was followed
-    following = false;
-    $('follow').pause();
-    $('followbtn').textContent = 'Follow with the mouse';
-    pins = pins.filter(p => (p.larva||1) !== curLarva)
-               .concat(fpts.map(p => ({t:p.t, x:p.x, y:p.y, larva:curLarva})));
-    renderPins(); showFrame(); draw();
-    return;
-  }
+  $('fullfollow').hidden = false;
   await loadFollow();
-  showFollow();
-  fpts = []; lastT = -1; following = true;
-  const v = $('follow');
-  v.currentTime = 0; v.playbackRate = +$('rate').value;
-  v.play();
-  $('followbtn').textContent = 'Stop and keep this larva';
-  cancelAnimationFrame(fraf); fsample();
-  v.onended = () => { if(following) $('followbtn').click(); };
+  startRun();
 };
-
+$('fpause').onclick = () => {
+  const v = $('follow');
+  if(v.paused){ v.play(); $('fpause').textContent = 'Pause'; }
+  else { v.pause(); $('fpause').textContent = 'Resume'; }
+};
+$('fstop').onclick = () => {
+  keep();
+  const next = [...Array(nLarvae).keys()].map(i=>i+1)
+    .find(i => !pins.some(p => (p.larva||1) === i));
+  if(next){ curLarva = next; armRun(); }
+  else fmsgHTML('<div>All ' + nLarvae + ' done</div>'
+                + '<small>close, then save the traced paths</small>');
+};
+$('fexit').onclick = () => {
+  if(following) keep();
+  $('fullfollow').hidden = true; showFrame(); draw();
+};
 $('rate').onchange = () => { $('follow').playbackRate = +$('rate').value; };
 addEventListener('keydown', e => {
-  if(e.code !== 'Space' || !following) return;
-  e.preventDefault();
-  const v = $('follow');
-  v.paused ? v.play() : v.pause();
+  if($('fullfollow').hidden) return;
+  if(e.code === 'Space'){ e.preventDefault(); $('fpause').click(); }
+  if(e.code === 'Escape'){ $('fexit').click(); }
+  if(/^Digit[1-5]$/.test(e.code)){
+    const n = +e.code.slice(5);
+    if(n <= nLarvae){ if(following) keep(); curLarva = n; armRun(); }
+  }
 });
+$('follow').addEventListener('ended', () => { if(following) $('fstop').click(); });
 
 $('stepback').onclick = () => step2(-2);
 $('stepfwd').onclick  = () => step2(2);
