@@ -42,6 +42,10 @@ CORS = {"Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Max-Age": "86400"}
 MAX_UPLOAD = 2 * 1024 ** 3          # 2GB; a 8min 4K clip is well under this
+# A larva is roughly 2% of the dish across. Below this the animal is a couple of
+# pixels and nothing can follow it - better to say so at once than to queue for
+# minutes and come back with "no larva found".
+MIN_DISH_PX = 200
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 EXPECTED = {}                       # upload id -> byte count the client promised
@@ -115,6 +119,11 @@ def run_job(job_id):
         trs = tptrack.trajectories(job["path"], circle, mm_per_px=mpp, log=log,
                                    steady=job["steady"])
         anchors = job.get("anchors") or None
+        if not trs:
+            raise tptrack.NoLarva(
+                "no larva found in that dish. The dish circle is %d px across; if "
+                "that is smaller than the dish in the frame, set it again. "
+                "Otherwise the larva may be too faint to pick out." % int(2 * circle[2]))
         total, seen, bridged = tptrack.measure(
             job["path"], job["dish_mm"], circle, log=log, steady=job["steady"],
             trs=trs, anchors=anchors)
@@ -122,7 +131,13 @@ def run_job(job_id):
                        steady=job["steady"], log=log, trs=trs, anchors=anchors)
         job.update(state="done", mm=round(total, 1), seen=round(seen, 1),
                    bridged=round(bridged, 1), replay="/replay?id=" + job_id)
-    except Exception as e:
+    except tptrack.NoLarva as e:
+        job["state"] = "error"
+        job["error"] = str(e)
+    except BaseException as e:
+        # BaseException on purpose. A SystemExit raised down in the tracker used
+        # to slip past "except Exception", kill this thread, and leave the job
+        # stuck on "running" with every later upload queued behind it forever.
         job["state"] = "error"
         job["error"] = "%s: %s" % (type(e).__name__, e)
         log(traceback.format_exc()[-800:])
@@ -130,11 +145,15 @@ def run_job(job_id):
 
 def worker():
     while True:
-        with QUEUE_CV:
-            while not QUEUE:
-                QUEUE_CV.wait()
-            job_id = QUEUE.pop(0)
-        run_job(job_id)
+        try:
+            with QUEUE_CV:
+                while not QUEUE:
+                    QUEUE_CV.wait()
+                job_id = QUEUE.pop(0)
+            run_job(job_id)
+        except BaseException:
+            # Whatever happened to one job, the queue has to keep moving.
+            traceback.print_exc()
 
 
 def enqueue(job_id):
@@ -332,6 +351,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(400, "need dish_mm and a dish circle")
             if not (5.0 <= dish_mm <= 500.0) or r < 20:
                 return self.fail(400, "dish diameter or circle looks wrong")
+            if 2 * r < MIN_DISH_PX:
+                return self.fail(400,
+                    "the dish is only %d px across in this clip, so a larva is "
+                    "about %.1f px - too small to track. Either the dish circle "
+                    "is set too small, or the video was downscaled before upload "
+                    "(AirDrop, iMessage and iCloud all do this). Send the "
+                    "original recording." % (2 * r, 0.02 * 2 * r))
             try:
                 anchors = [(float(a["t"]), float(a["x"]), float(a["y"]))
                            for a in (body.get("anchors") or [])][:200]

@@ -101,7 +101,7 @@ a{color:var(--accent)}
           <p class="note" id="dishnote">—</p>
         </fieldset>
 
-        <fieldset id="fs4" disabled>
+        <fieldset id="fs4" hidden>
           <legend>corrections</legend>
           <p class="note" style="margin:0">If it followed the wrong thing, scrub to
             that moment and click the real larva. Each pin overrules the tracker.</p>
@@ -282,8 +282,13 @@ $('file').onchange = async e => {
     $('shot').src = await blobURL(`/frame?id=${encodeURIComponent(j.id)}&t=0`);
     $('upnote').textContent = `${j.w}×${j.h}, ${j.dur}s`;
     $('barwrap').hidden = true;
+    if(Math.min(j.w, j.h) < 480){
+      $('upnote').innerHTML = `${j.w}×${j.h}, ${j.dur}s — <span class="err">this clip is `
+        + `too small to track a larva. It was probably downscaled by AirDrop, iMessage `
+        + `or iCloud. Send the original recording.</span>`;
+    }
     $('fs2').disabled = false;
-    $('fs4').disabled = false;
+    $('fs4').hidden = true;            // nothing to correct until there is a result
     pins = []; frameCache = {}; scrubT = 0; renderPins();
     $('scrub').max = String(Math.max(1, Math.floor(j.dur)));
     $('scrub').value = '0';
@@ -387,6 +392,8 @@ async function check(id){
       + `This is a lower bound — time the larva was invisible is not counted.`;
     const v = $('rep');
     v.src = await blobURL(j.replay); showReplay();
+    // Only now is there something to disagree with.
+    $('fs4').hidden = false;
     $('stagenote').textContent = 'Replay: the path being drawn as it was walked. '
       + 'If it followed the wrong thing, you will see it here.';
     v.play().catch(()=>{});

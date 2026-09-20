@@ -26,6 +26,11 @@ import numpy as np
 
 import trail
 
+class NoLarva(Exception):
+    """Nothing trackable in the dish. A normal outcome, not a crash: the dish may
+    be wrongly placed, or the animal never visible enough to find."""
+
+
 EVERY_S = 2.0        # sampling interval; the linker's search range scales with it
 DIAMETER = 13        # odd, and a bit larger than the larva in px at working scale
 MASS_PCT = 99.5      # keep only the brightest features - the rest are agar specks
@@ -42,7 +47,7 @@ def _sample(video, circle, every=EVERY_S):
     cx, cy, r = circle
     cap = cv2.VideoCapture(video)
     if not cap.isOpened():
-        raise SystemExit("cannot open %s" % video)
+        raise NoLarva("cannot open the video file")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     ox, oy, side = int(cx - r), int(cy - r), int(2 * r)
     frames, t = [], 0.0
@@ -108,7 +113,7 @@ def trajectories(video, circle, every=EVERY_S, mm_per_px=None, log=print,
 
     frames, _ = _sample(video, circle, every)
     if not frames:
-        raise SystemExit("no frames read from %s" % video)
+        raise NoLarva("no frames could be read from the clip")
     log("%d frames at %.1fs spacing" % (len(frames), every))
 
     if steady:
@@ -399,7 +404,7 @@ def replay(video, dish_mm, circle, out, every=EVERY_S, larvae=1, steady=False,
     kept = trajectories(video, circle, every, mpp, log, steady) if trs is None \
         else list(trs)
     if not kept:
-        raise SystemExit("no trajectories to replay")
+        raise NoLarva("nothing was tracked, so there is no path to replay")
     if larvae == 1:
         kept = _drop_overlaps(kept)
         group, lo, hi = _attribute(kept, to_crop(anchors, circle) if anchors else None,
@@ -415,11 +420,11 @@ def replay(video, dish_mm, circle, out, every=EVERY_S, larvae=1, steady=False,
     # Every sampled instant, so a path grows in step with the frame it belongs to.
     stamps = sorted({float(t) for k in shown for t in kept[k][0]})
     if not stamps:
-        raise SystemExit("no timestamps to replay")
+        raise NoLarva("nothing was tracked, so there is no path to replay")
 
     ff = shutil.which("ffmpeg")
     if not ff:
-        raise SystemExit("ffmpeg is needed to write the replay")
+        raise NoLarva("ffmpeg is needed to write the replay")
     proc = subprocess.Popen(
         [ff, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
          "-s", "%dx%d" % (size, size), "-r", "8", "-i", "-", "-c:v", "libx264",
@@ -458,8 +463,7 @@ def replay(video, dish_mm, circle, out, every=EVERY_S, larvae=1, steady=False,
         cap.release()
         proc.stdin.close()
         if proc.wait() != 0:
-            raise SystemExit("ffmpeg failed: "
-                             + proc.stderr.read().decode()[-300:])
+            raise NoLarva("ffmpeg failed: " + proc.stderr.read().decode()[-300:])
     log("wrote %s (%d frames)" % (out, len(stamps)))
     return out
 
