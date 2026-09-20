@@ -64,62 +64,161 @@ def pieces_of(binv, mpp, max_width_mm):
     return sum(p["mm"] for p in keep), keep, dropped, lab
 
 
-def measure(video, dish_mm, circle, every=5.0, edge=0.88, max_width_mm=2.5, log=print):
-    """Total trail length in mm for one dish."""
+def _accept_step(diff, thr, mpp, max_width_mm, min_mm, max_mm=None):
+    """Keep the parts of one increment that look like a larva moved there."""
+    bw = (diff > thr).astype(np.uint8) * 255
+    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    n, lab, stats, _c = cv2.connectedComponentsWithStats((bw > 0).astype(np.uint8), 8)
+    out = np.zeros_like(bw)
+    for k in range(1, n):
+        if stats[k, cv2.CC_STAT_AREA] < 25:
+            continue
+        piece = (lab == k).astype(np.uint8) * 255
+        mm, w = ribbon_mm(piece, mpp)
+        # One increment is one larva-step: about a millimetre wide, and no longer
+        # than the animal could crawl in that time. Bounding both ends keeps
+        # noise specks and broad shadows out without any threshold tuning.
+        if w <= max_width_mm and mm >= min_mm and (max_mm is None or mm <= max_mm):
+            out[lab == k] = 255
+    return out
+
+
+def measure(video, dish_mm, circle, every=5.0, edge=0.88, max_width_mm=2.5,
+            threshold=None, log=print):
+    """Total trail length in mm for one dish.
+
+    Each increment - what changed over the last `every` seconds - is judged on its
+    own and, if it looks like a larva moved there, added to a trail that only ever
+    grows. Judging the whole accumulated blob instead was the bug behind the total
+    jumping about: once a growing trail merged with a shadow the merged shape read
+    as "too broad" and the entire thing was discarded, then reappeared when a
+    different threshold split it again.
+    """
     cap = cv2.VideoCapture(video)
     if not cap.isOpened():
         raise lt.TrackingError(f"cannot open {video!r}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    dur = (cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) / max(fps, 1e-6)
     cx, cy, r = circle
     ox, oy = max(0, int(cx - r)), max(0, int(cy - r))
     side = int(2 * r)
-    frames = []
-    for t in np.arange(0.0, total_frames / max(fps, 1e-6), every):
+    mpp = dish_mm / (2 * r)
+
+    grabs = []
+    t = 0.0
+    while t < dur:
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
         ok, f = cap.read()
         if not ok:
             break
-        frames.append(cv2.cvtColor(f[oy:oy + side, ox:ox + side], cv2.COLOR_BGR2GRAY))
+        grabs.append(cv2.cvtColor(f[oy:oy + side, ox:ox + side], cv2.COLOR_BGR2GRAY))
+        t += every
     cap.release()
-    if len(frames) < 3:
+    grabs = [g for g in grabs if g.shape == grabs[0].shape] if grabs else []
+    if len(grabs) < 3:
         raise lt.TrackingError("not enough frames")
 
-    frames = [f for f in frames if f.shape == frames[0].shape]
-    mask = np.zeros(frames[0].shape, np.uint8)
+    mask = np.zeros(grabs[0].shape, np.uint8)
     cv2.circle(mask, (int(cx - ox), int(cy - oy)), int(r * edge), 255, -1)
-    acc = np.zeros(frames[0].shape, np.uint8)
-    for a, b in zip(frames, frames[1:]):
-        acc = cv2.max(acc, cv2.absdiff(cv2.GaussianBlur(a, (0, 0), 2),
-                                       cv2.GaussianBlur(b, (0, 0), 2)))
-    acc = cv2.bitwise_and(acc, mask)
-    inside = acc[mask > 0].astype(np.float32)
-    mad = float(np.median(np.abs(inside - np.median(inside))))
-    base = max(8, int(np.median(inside) + 3 * 1.4826 * mad))
-    mpp = dish_mm / (2 * r)
+    diffs = [cv2.bitwise_and(cv2.absdiff(cv2.GaussianBlur(a, (0, 0), 2),
+                                         cv2.GaussianBlur(b, (0, 0), 2)), mask)
+             for a, b in zip(grabs, grabs[1:])]
+    # Threshold from a high percentile of the increments, not from the median and
+    # MAD: almost every pixel of almost every increment is unchanged, so those
+    # statistics sit near zero and let speckle through everywhere. The 99.8th
+    # percentile tracks the signal instead, and produced trails matching the raw
+    # motion maps by eye on all three single-larva dishes.
+    pool = np.concatenate([d[mask > 0] for d in diffs]).astype(np.float32)
+    base = max(8, int(np.percentile(pool, 99.8)))
+    min_mm = 0.8
+    # A larva tops out around 4 mm/s, so one increment cannot be longer than that
+    # times the gap - anything longer is a shadow sweeping across, not an animal.
+    max_mm = lt.D["max_speed"] * every
 
-    # No single threshold suits every plate: too low and a bright trail floods
-    # into a broad blob the width filter discards, too high and a faint one
-    # disappears. Sweep, and keep whichever yields the most trail-shaped trail.
-    best = None
-    hi = max(base + 2, min(int(acc.max()), base + 110))
-    for thr in range(base, hi, 3):
-        b = (acc > thr).astype(np.uint8) * 255
-        b = cv2.morphologyEx(b, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-        b = cv2.morphologyEx(b, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-        tot, keep, dropped, lab = pieces_of(b, mpp, max_width_mm)
-        if best is None or tot > best[0]:
-            best = (tot, thr, keep, dropped, lab)
-    total, thr, keep, dropped, lab = best
+    def build(thr):
+        trail_mask = np.zeros(grabs[0].shape, np.uint8)
+        for d in diffs:
+            trail_mask = cv2.max(trail_mask,
+                                 _accept_step(d, thr, mpp, max_width_mm, min_mm, max_mm))
+        return trail_mask
 
-    shown = np.zeros(acc.shape, np.uint8)
-    for p in keep:
-        shown[lab == p["label"]] = 255
-    log(f"{total:.1f} mm of trail from {len(keep)} pieces at threshold {thr}")
+    # Set the threshold from the noise, do not search for the value that yields
+    # the most trail: that objective rewards noise and drives it to the floor.
+    thr = threshold if threshold is not None else base
+    trail_mask = build(thr)
+
+    total, width = ribbon_mm(trail_mask, mpp)
+    log(f"{total:.1f} mm of trail at threshold {thr} ({len(diffs)} increments)")
     return {"totalMm": round(total, 1), "threshold": thr, "mmPerPx": round(mpp, 5),
-            "widthMm": keep[0]["widthMm"] if keep else 0.0, "frames": len(frames),
-            "pieces": keep, "rejected": dropped[:6],
-            "acc": acc, "trail": shown, "origin": (ox, oy)}
+            "widthMm": round(width, 2), "frames": len(grabs),
+            "trail": trail_mask, "origin": (ox, oy), "mask": mask}
+
+
+def replay(video, dish_mm, circle, out, every=5.0, edge=0.88, max_width_mm=2.5,
+           threshold=None, log=print):
+    """Render the dish with its trail painting itself, increment by increment.
+
+    Exactly the same accumulation the measurement uses, so the number on screen at
+    the end is the number it reports.
+    """
+    import shutil, subprocess
+    m = measure(video, dish_mm, circle, every=every, edge=edge,
+                max_width_mm=max_width_mm, threshold=threshold, log=lambda *a: None)
+    thr, mpp, mask = m["threshold"], m["mmPerPx"], m["mask"]
+    ox, oy = m["origin"]
+    cx, cy, r = circle
+    side = int(2 * r)
+
+    cap = cv2.VideoCapture(video)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    dur = (cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) / max(fps, 1e-6)
+    size = 720
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise lt.TrackingError("ffmpeg is needed to write the replay")
+    proc = subprocess.Popen(
+        [ff, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+         "-s", f"{size}x{size}", "-r", "8", "-i", "-", "-c:v", "libx264",
+         "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+         "-movflags", "+faststart", out],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    trail_mask = np.zeros(mask.shape, np.uint8)
+    prev = None
+    t, n = 0.0, 0
+    while t < dur:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
+        ok, f = cap.read()
+        if not ok:
+            break
+        cur = f[oy:oy + side, ox:ox + side]
+        if cur.shape[:2] != mask.shape:
+            break
+        g = cv2.cvtColor(cur, cv2.COLOR_BGR2GRAY)
+        if prev is not None:
+            d = cv2.bitwise_and(cv2.absdiff(cv2.GaussianBlur(g, (0, 0), 2),
+                                            cv2.GaussianBlur(prev, (0, 0), 2)), mask)
+            trail_mask = cv2.max(trail_mask,
+                                 _accept_step(d, thr, mpp, max_width_mm, 0.8))
+        prev = g
+        total, _w = ribbon_mm(trail_mask, mpp)
+        im = cv2.resize(cur, (size, size))
+        paint = cv2.resize(trail_mask, (size, size), interpolation=cv2.INTER_NEAREST)
+        im[paint > 0] = (0.2 * im[paint > 0] + 0.8 * np.array([60, 60, 255])).astype(np.uint8)
+        cv2.putText(im, f"trail {total:6.1f} mm", (12, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    .7, (60, 60, 255), 2, cv2.LINE_AA)
+        cv2.putText(im, f"{t:5.0f}s", (size - 96, 30), cv2.FONT_HERSHEY_SIMPLEX, .7,
+                    (255, 255, 255), 2, cv2.LINE_AA)
+        proc.stdin.write(im.tobytes())
+        n += 1
+        t += every
+    cap.release()
+    proc.stdin.close()
+    if proc.wait() != 0:
+        raise lt.TrackingError("ffmpeg failed: " + proc.stderr.read().decode()[-200:])
+    log(f"wrote {out} ({n} frames); ends at {m['totalMm']} mm")
+    return m
 
 
 def self_check():
@@ -145,106 +244,3 @@ def self_check():
 
 if __name__ == "__main__":
     self_check()
-
-
-def replay(video, dish_mm, circle, out, every=5.0, show_step=1.0, edge=0.88,
-           max_width_mm=2.5, threshold=None, log=print):
-    """Render the dish with its trail painting itself as the clip plays.
-
-    Each output frame compares now against `every` seconds ago, so you watch the
-    trail accumulate the same way the measurement builds it - the animal moving,
-    the line growing behind it, and the running total climbing.
-    """
-    import shutil, subprocess
-    cap = cv2.VideoCapture(video)
-    if not cap.isOpened():
-        raise lt.TrackingError(f"cannot open {video!r}")
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    dur = (cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) / max(fps, 1e-6)
-    cx, cy, r = circle
-    ox, oy = max(0, int(cx - r)), max(0, int(cy - r))
-    side = int(2 * r)
-    mpp = dish_mm / (2 * r)
-    size = 720
-
-    grab = {}
-    def at(t):
-        k = round(t, 2)
-        if k not in grab:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(k * fps)))
-            ok, f = cap.read()
-            grab[k] = f[oy:oy + side, ox:ox + side] if ok else None
-        return grab[k]
-
-    # The dish can hang off an edge of the frame, so the crop is not always the
-    # square we asked for. Take the shape from a real frame.
-    first = at(0.0)
-    if first is None:
-        raise lt.TrackingError("could not read the first frame")
-    ch, cw = first.shape[:2]
-    mask = np.zeros((ch, cw), np.uint8)
-    cv2.circle(mask, (int(cx - ox), int(cy - oy)), int(r * edge), 255, -1)
-    acc = np.zeros((ch, cw), np.uint8)
-
-    if threshold is None:
-        threshold = measure(video, dish_mm, circle, every=every, edge=edge,
-                            max_width_mm=max_width_mm, log=lambda *a: None)["threshold"]
-        log(f"using the measurement's threshold ({threshold})")
-
-    ff = shutil.which("ffmpeg")
-    if not ff:
-        raise lt.TrackingError("ffmpeg is needed to write the replay")
-    proc = subprocess.Popen(
-        [ff, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
-         "-s", f"{size}x{size}", "-r", "20", "-i", "-", "-c:v", "libx264",
-         "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
-         "-movflags", "+faststart", out],
-        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-
-    n = 0
-    thr_final = None
-    t = 0.0
-    while t < dur:
-        now = at(t)
-        past = at(max(0.0, t - every))
-        if now is None or past is None:
-            break
-        a = cv2.cvtColor(now, cv2.COLOR_BGR2GRAY)
-        b = cv2.cvtColor(past, cv2.COLOR_BGR2GRAY)
-        d = cv2.absdiff(cv2.GaussianBlur(a, (0, 0), 2), cv2.GaussianBlur(b, (0, 0), 2))
-        acc = cv2.max(acc, cv2.bitwise_and(d, mask))
-
-        # Use the threshold the measurement settled on. Recomputing it per frame
-        # made the video disagree with the number it was supposed to illustrate -
-        # 10 mm on screen against 46 mm measured, on the same clip.
-        thr = threshold
-        bw = (acc > thr).astype(np.uint8) * 255
-        bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-        bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-        total, keep, _drop, lab = pieces_of(bw, mpp, max_width_mm)
-        shown = np.zeros_like(bw)
-        for p in keep:
-            shown[lab == p["label"]] = 255
-        thr_final = thr
-
-        sc = size / float(cw)
-        im = cv2.resize(now, (size, size))
-        paint = cv2.resize(shown, (size, size), interpolation=cv2.INTER_NEAREST)
-        im[paint > 0] = (0.25 * im[paint > 0] + 0.75 * np.array([60, 60, 255])).astype(np.uint8)
-        cv2.ellipse(im, (int((cx - ox) * size / cw), int((cy - oy) * size / ch)),
-                    (int(r * edge * size / cw), int(r * edge * size / ch)),
-                    0, 0, 360, (120, 120, 120), 1)
-        cv2.putText(im, f"{t:5.0f}s", (size - 96, 30), cv2.FONT_HERSHEY_SIMPLEX, .7,
-                    (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(im, f"trail {total:6.1f} mm", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, .7,
-                    (60, 60, 255), 2, cv2.LINE_AA)
-        proc.stdin.write(im.tobytes())
-        n += 1
-        t += show_step
-    cap.release()
-    proc.stdin.close()
-    err = proc.stderr.read().decode()[-300:]
-    if proc.wait() != 0:
-        raise lt.TrackingError(f"ffmpeg failed: {err}")
-    log(f"wrote {out} ({n} frames, threshold ended at {thr_final})")
-    return out
