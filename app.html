@@ -821,16 +821,42 @@ async function check(id){
   $('log').scrollTop = $('log').scrollHeight;
   if(j.state === 'done'){
     clearInterval(poll); reset();
-    $('mm').textContent = j.mm + ' mm';
-    $('detail').textContent = `${j.seen} mm seen + ${j.bridged} mm bridged across gaps. `
-      + `This is a lower bound — time the larva was invisible is not counted.`;
-    const v = $('rep');
-    v.src = await blobURL(j.replay); showReplay();
-    // Only now is there something to disagree with.
+    const per = j.per_larva_cm;
+    if(per){
+      // One line per animal. Five larvae added together is not a quantity
+      // anyone reports, so the sum is a footnote rather than the headline.
+      const ent = Object.entries(per).sort((a,b) => +a[0] - +b[0]);
+      $('mm').textContent = ent.length > 1 ? `${ent.length} larvae`
+                                           : `${(+ent[0][1]).toFixed(2)} cm`;
+      const rows = ent.map(([k,v]) =>
+        `<tr><td style="color:${LCOL[(+k-1)%LCOL.length]};padding:3px 14px 3px 0">`
+        + `<b>larva ${k}</b></td>`
+        + `<td style="text-align:right;font-weight:600">${(+v).toFixed(2)} cm</td>`
+        + `<td style="color:var(--dim);padding-left:14px">`
+        + `${(j.per_larva && j.per_larva[k] != null ? j.per_larva[k] : +v*10).toFixed(1)}`
+        + ` mm</td></tr>`).join('');
+      const total = ent.reduce((a,[,v]) => a + +v, 0);
+      $('detail').innerHTML =
+        `<table style="margin:6px 0 8px;font-size:15px">${rows}</table>`
+        + (ent.length > 1 ? `<div style="color:var(--dim)">plate total `
+            + `${total.toFixed(2)} cm across ${ent.length} larvae</div>` : '')
+        + (j.saved_to ? `<div style="color:var(--good);margin-top:6px">saved to `
+            + `${j.saved_to.split('/').slice(-2).join('/')}</div>` : '');
+      $('log').textContent = ent.map(([k,v]) => `larva ${k}\t${v} cm`).join('\n');
+    } else {
+      $('mm').textContent = j.mm + ' mm';
+      $('detail').textContent = `${j.seen} mm seen + ${j.bridged} mm bridged across `
+        + `gaps. This is a lower bound — time the larva was invisible is not counted.`;
+    }
+    // A hand-traced run has no replay to show; only an automatic one does.
+    if(j.replay){
+      const v = $('rep');
+      v.src = await blobURL(j.replay); showReplay();
+      $('stagenote').textContent = 'Replay: the path being drawn as it was walked. '
+        + 'If it followed the wrong thing, you will see it here.';
+      v.play().catch(()=>{});
+    }
     if(!manual) $('fs4').hidden = false;
-    $('stagenote').textContent = 'Replay: the path being drawn as it was walked. '
-      + 'If it followed the wrong thing, you will see it here.';
-    v.play().catch(()=>{});
   } else if(j.state === 'error'){
     clearInterval(poll); reset();
     $('mm').textContent = '—';
