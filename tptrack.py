@@ -192,8 +192,11 @@ def to_crop(anchors, circle):
     """Pinned points arrive in whole-frame pixels; everything here is in the
     dish crop, whose origin is the circle's top-left corner."""
     cx, cy, r = circle
-    return [(float(t), float(x) - (cx - r), float(y) - (cy - r))
-            for t, x, y in anchors]
+    # A pin may carry which larva it belongs to as a fourth field; ignore it
+    # here. Unpacking exactly three crashed every correction once hand tracing
+    # started tagging points with an animal.
+    return [(float(a[0]), float(a[1]) - (cx - r), float(a[2]) - (cy - r))
+            for a in anchors]
 
 
 def _contradicted(traj, anchors, mpp, every=EVERY_S, tol_mm=ANCHOR_TOL_MM):
@@ -681,6 +684,11 @@ def self_check():
     g_pin, _, _ = _attribute(list(kept), to_crop(pin, circle2), mpp2)
     assert any(p is animal for p in g_pin), "a pin must select the trajectory it touches"
     assert all(p is not speck for p in g_pin), "a pin must reject what it contradicts"
+
+    # A pin carrying a larva tag must be accepted wherever a plain one is.
+    tagged = [(pin_t, animal_xy[10][0] + (circle2[0] - r2),
+               animal_xy[10][1] + (circle2[1] - r2), 3)]
+    assert to_crop(tagged, circle2)[0][:3] == to_crop(pin, circle2)[0][:3]
 
     # A pin where nothing was tracked must not throw everything away.
     lonely = [(500.0, circle2[0], circle2[1])]
