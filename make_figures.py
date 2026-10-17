@@ -1,7 +1,8 @@
-import sys; sys.path.insert(0,'/Users/aniksahai/Desktop/PCB4054C-01H')
+import os
 import cv2, numpy as np, tptrack
 
-DOCS='/Users/aniksahai/Desktop/PCB4054C-01H/docs'
+HERE=os.path.dirname(os.path.abspath(__file__))
+DOCS=os.path.join(HERE,'docs')
 F=cv2.FONT_HERSHEY_SIMPLEX
 
 def panel(video, circle, larvae, letter, title, sub, side=760):
@@ -31,7 +32,7 @@ def panel(video, circle, larvae, letter, title, sub, side=760):
     return np.vstack([im, strip])
 
 def main():
-    C='/Users/aniksahai/Desktop/PCB4054C-01H/clips'
+    C=os.path.join(HERE,'videos')
     # Figure 1 - one larva per plate
     p=[panel(f'{C}/dish3_5min.mp4',(568.,549.,297.),1,'A','Plate 3, left  -  72.1 mm',
              ['single larva, tracked 116 s of 300 s']),

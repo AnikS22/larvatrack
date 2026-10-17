@@ -222,3 +222,7 @@ off the phone, not a copy that has been through any of them.
   rescue it — that one needs reshooting.
 - Dish diameter is trusted, not verified.
 - Multi-larva mode gives per-trajectory lengths, not per-animal identities.
+
+## Author and license
+
+Written by Anik Sahai. MIT licensed, see [LICENSE](LICENSE).
