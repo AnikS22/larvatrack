@@ -40,7 +40,7 @@ def main():
              ['single larva, tracked 226 s of 300 s']),
        panel(f'{C}/dish2_5min.mp4',(1005.,790.,306.),1,'C','Plate 2  -  44.3 mm',
              ['single larva, tracked 126 s of 300 s'])]
-    cv2.imwrite(f'{DOCS}/fig1_single_larva_paths.png', np.hstack(p))
+    cv2.imwrite(f'{DOCS}/fig1_single_larva_paths.jpg', np.hstack(p))
     print('fig1', np.hstack(p).shape)
 
     # Figure 2 - five larvae per plate, one colour each
@@ -48,7 +48,7 @@ def main():
              ['62.9 / 57.6 / 35.3 / 32.6 mm','per-trajectory, not per-animal identity']),
        panel(f'{C}/dish4_5min.mp4',(1260.,682.,297.),5,'B','Plate 4, right  -  5 larvae',
              ['99.3 / 72.9 / 44.1 / 30.8 / 30.0 mm','per-trajectory, not per-animal identity'])]
-    cv2.imwrite(f'{DOCS}/fig2_multiple_larvae_paths.png', np.hstack(q))
+    cv2.imwrite(f'{DOCS}/fig2_multiple_larvae_paths.jpg', np.hstack(q))
     print('fig2', np.hstack(q).shape)
 
 if __name__=='__main__': main()

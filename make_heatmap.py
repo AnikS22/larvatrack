@@ -77,4 +77,4 @@ def render(video, circle, out_png, label, steady=False, side=760):
 
 if __name__ == "__main__":
     render('videos/dish3_5min.mp4', (568., 549., 297.),
-           'docs/fig3_motion_heatmap.png', 'Plate 3, left')
+           'docs/fig3_motion_heatmap.jpg', 'Plate 3, left')
