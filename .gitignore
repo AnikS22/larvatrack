@@ -19,3 +19,5 @@ web/node_modules/
 web/.vercel/
 web/.env.local
 .vercel/
+videos/*
+!videos/.gitkeep
