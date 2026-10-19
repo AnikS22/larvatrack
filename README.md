@@ -45,10 +45,6 @@ You get back the path length and the replay above, so you can see whether it fol
 
 <sub><b>Single-larva plates.</b> Red traces show the measured trajectory; scale bars 10 mm.</sub>
 
-<img src="docs/fig2_multiple_larvae_paths.jpg" width="100%" alt="Two plates with five larvae each, each trajectory in its own colour">
-
-<sub><b>Plates containing five larvae</b>, each trajectory in its own colour. Lengths are per-trajectory and do not establish per-animal identity across gaps.</sub>
-
 <img src="docs/fig3_motion_heatmap.jpg" width="100%" alt="Motion samples accumulated over a recording, and the same samples coloured by time">
 
 <sub><b>Raw motion evidence underlying the reconstruction.</b> Left: every 2 s interval in which something moved, accumulated over the recording. Right: the same samples coloured by time (blue early, red late), showing the animal's progress along the plate wall. Scattered flecks away from the trail are agar debris flickering between frames, which is why detection alone is insufficient and trajectories must be linked and filtered.</sub>
