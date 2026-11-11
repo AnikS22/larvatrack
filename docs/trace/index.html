@@ -56,6 +56,7 @@ td{padding:3px 0} td.n{text-align:right;font-weight:600;font-variant-numeric:tab
 #fbar button{width:auto;padding:8px 14px;font-size:14px;margin:0}
 #ftotal{font:600 17px/1 ui-monospace,Menlo,monospace;color:var(--good);min-width:210px;text-align:right}
 a{color:var(--accent)}
+.guide details{background:var(--panel);border:1px solid var(--line);border-left:4px solid #003366;border-radius:6px;padding:10px 16px}.guide details[open]{border-left-color:#cc0000}.guide summary{cursor:pointer;font-weight:700;font-size:16px;color:#003366}.guide p,.guide li{font-size:14px}.guide ol,.guide ul{padding-left:20px;margin:6px 0}.guide .eq{font:13px/1.5 ui-monospace,Menlo,monospace;background:var(--sunk);border-radius:4px;padding:6px 10px;display:block;margin:6px 0}
 </style>
 
 <div class="wrap">
@@ -68,6 +69,13 @@ a{color:var(--accent)}
     mouse while the clip plays back fast. Everything runs in your browser — the video is
     never uploaded.</p>
 
+  <div class="guide" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin:0 0 22px;align-items:start">
+    <details open><summary>The biology</summary><p>The <i>foraging</i> (<i>for</i>) gene encodes a cGMP-dependent protein kinase (PKG). Larvae with the <b>rover</b> allele (for<sup>R</sup>, high PKG) crawl long paths while feeding; <b>sitters</b> (for<sup>S</sup>) stay put (Sokolowski, 1980; Osborne et al., 1997). The difference is clearest on food and shrinks on plain agar.</p></details>
+    <details open><summary>How to use it</summary><ol><li>Open the plate video. Drag across the dish rim to rim and type its diameter.</li><li>Press <b>Follow with the mouse</b>, click the larva, and keep the pointer on it while the clip plays fast. Keys 1–5 switch larva; space pauses.</li><li>Redo any larva to correct it. Results list every larva's distance.</li></ol></details>
+    <details><summary>Reading the results</summary><p>Path length in millimetres over the clip. Rovers should exceed sitters, most on yeast.</p></details>
+    <details><summary>The statistics</summary><span class="eq">mm per pixel = dish diameter (mm) ÷ dish width (px)</span><span class="eq">path length = Σ distance between successive pointer positions</span><p>Each larva is a replicate; compare genotypes with a Welch t-test (e.g. in the stress tool's spreadsheet, or your own).</p></details>
+    <details><summary>Tips &amp; common mistakes</summary><ul><li>A wrong diameter scales every number wrongly with no other symptom.</li><li>Keep the camera fixed.</li><li>Need it fully automatic? Request AI analysis.</li></ul></details>
+  </div>
   <div class="cols">
     <div class="card">
       <div class="stage"><canvas id="c"></canvas></div>

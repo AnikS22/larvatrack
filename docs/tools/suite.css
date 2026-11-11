@@ -50,3 +50,14 @@ footer{color:var(--dim);font-size:13px;padding:24px 0 40px}
 .how{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px 18px;margin:0 0 18px}
 .how ol{margin:6px 0 0;padding-left:20px} .how li{margin:3px 0}
 .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:700;background:#e3f4ea;color:#14663a}
+/* guide: the explanation every tool page carries */
+.guide{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin:0 0 22px}
+.guide details{background:#fff;border:1px solid var(--line);border-left:4px solid var(--fau-blue);border-radius:6px;padding:10px 16px}
+.guide details[open]{border-left-color:var(--fau-red)}
+.guide summary{cursor:pointer;font:700 17px/1.3 var(--serif);color:var(--fau-blue);padding:2px 0}
+.guide p,.guide li{font-size:15px}
+.guide ol,.guide ul{padding-left:20px;margin:6px 0}
+.guide .eq{font:14px/1.5 ui-monospace,Menlo,monospace;background:var(--wash);border-radius:4px;padding:6px 10px;display:block;margin:6px 0}
+.guide .wide{grid-column:1/-1}
+[hidden]{display:none!important}
+.guide{align-items:start}

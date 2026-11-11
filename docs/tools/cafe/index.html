@@ -12,11 +12,13 @@
   <h1>Feeding (CAFE assay)</h1>
   <p class="sub">Measures how much flies drank from each capillary, from one photo of the tubes next to a ruler.
     Length of liquid gone × volume per millimetre = microlitres eaten.</p>
-  <div class="how"><b>How it works</b><ol>
-    <li>Upload a photo of the capillaries lying next to a ruler.</li>
-    <li><b>Scale:</b> click two marks on the ruler and type the distance between them.</li>
-    <li><b>Tubes:</b> for each capillary, click its start mark, then the food level after feeding. Give it a group and food.</li>
-    <li>Wrong click? Press <b>Undo</b>, or delete the tube in the table and measure it again.</li></ol></div>
+  <div class="guide">
+    <details open><summary>The biology</summary><p>The CAFE (Capillary Feeder) assay measures how much adult flies actually eat: liquid food is offered only in calibrated glass capillaries, so the drop in the meniscus is the meal (Ja et al., 2007).</p><p>The <i>foraging</i> gene (PKG) shapes feeding as well as movement: rovers and sitters differ in sucrose responsiveness and intake. Dyeing each food two colors lets a color preference be told apart from a taste preference.</p></details>
+    <details open><summary>How to use it</summary><ol><li>Upload a photo of the capillaries lying next to a ruler.</li><li><b>Scale:</b> click two ruler marks and type the distance between them.</li><li><b>Tubes:</b> click each capillary's start mark, then the food level after feeding. Set its group and food first.</li><li>Undo a click, delete a tube, or relabel it in the table at any time.</li></ol></details>
+    <details><summary>Reading the results</summary><p><b>Volume</b> is µL drunk from each capillary; <b>per fly</b> divides by the flies in the vial. The chart compares every group × food combination, so sucrose vs water and genotype differences sit side by side.</p></details>
+    <details><summary>The statistics</summary><span class="eq">length (mm) = pixel distance ÷ pixels per mm (from the ruler)</span><span class="eq">volume (µL) = length × capillary volume ÷ capillary length</span><p>Each capillary is a replicate. Welch t-tests compare groups.</p></details>
+    <details><summary>Tips &amp; common mistakes</summary><ul><li>Run a vial with <b>no flies</b> to measure evaporation, and subtract it.</li><li>Photograph flat and square-on: an angle shortens the tubes.</li><li>When a tube has two start marks, use the one closer to the food.</li></ul></details>
+  </div>
 
   <div class="cols">
     <div>

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FlyBench · Learning &amp; Memory</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>Learning &amp; memory (T-maze)</h1>
+  <p class="sub">Scores olfactory conditioning: after an odor is paired with a shock, do flies avoid that odor when given
+    the choice? Turns T-maze counts into a Performance Index and compares genotypes such as <i>dunce</i> and wild type.</p>
+
+  <div class="guide">
+    <details open><summary>The biology</summary>
+      <p>Flies learn to associate an odor (CS+) with an electric shock and later avoid it, while a second odor (CS−) is
+        presented without shock. The memory is formed in the <b>mushroom bodies</b> and depends on cAMP signalling.</p>
+      <p><i>dunce</i> was the first learning mutant found in a fly (Dudai et al., 1976). It lacks a cAMP phosphodiesterase,
+        so cAMP stays high and conditioning barely sticks: <i>dunce</i> flies learn poorly and forget fast. Wild-type
+        (Canton-S) flies score high immediately and keep part of the memory for hours.</p></details>
+    <details open><summary>How to use it</summary><ol>
+      <li>For each T-maze test, type the genotype, the retention interval (e.g. <i>0 min</i> for learning, <i>3 h</i> for memory),
+        a replicate number, and how many flies went to each arm.</li>
+      <li>Run the two reciprocal halves (odor A shocked, then odor B shocked) as two rows with the same replicate number: the tool averages them, which cancels any innate odor preference.</li>
+      <li>Edit any cell to correct it, or delete a row. Paste rows straight from a spreadsheet with <b>Paste rows</b>.</li></ol></details>
+    <details><summary>Reading the results</summary>
+      <p><b>PI = 100</b>: every fly avoided the shocked odor. <b>PI = 0</b>: a 50/50 split, no learning. Negative PIs mean flies preferred the shocked odor (usually noise).</p>
+      <p>Compare genotypes at the same interval, and the same genotype across intervals to see forgetting. Each replicate is one dot on the chart.</p></details>
+    <details><summary>The statistics</summary>
+      <span class="eq">half PI = 100 × (flies in CS− arm − flies in CS+ arm) / (all flies that chose)</span>
+      <span class="eq">PI = mean of the two reciprocal halves</span>
+      <p>A <b>one-sample t-test</b> against 0 asks whether a group learned at all; a <b>Welch t-test</b> compares two groups without assuming equal variances. The replicate (not the individual fly) is the unit of n, because flies within one tube are tested together.</p></details>
+    <details><summary>Tips &amp; common mistakes</summary><ul>
+      <li>Leave out flies that stayed in the elevator: they made no choice.</li>
+      <li>Check odor balance first: untrained flies should split about 50/50.</li>
+      <li>Aim for 6 or more replicates per group; PIs are noisy.</li></ul></details>
+  </div>
+
+  <div class="cols">
+    <div>
+      <div class="card"><h2>Performance Index by group</h2><div class="chart" id="chart"></div><div class="scroll" id="summary"></div></div>
+      <div class="card"><h2>All tests</h2><div class="scroll" id="table"></div></div>
+    </div>
+    <div>
+      <div class="card"><p class="step">1 · Add a test</p>
+        <label>Genotype <input type="text" id="g" value="Canton-S"></label>
+        <label>Retention interval <input type="text" id="iv" value="0 min"></label>
+        <label>Replicate # (same # for reciprocal halves) <input type="number" id="rep" value="1" min="1"></label>
+        <div class="row"><label style="flex:1">Flies in CS− arm (safe) <input type="number" id="minus" value="0" min="0"></label>
+          <label style="flex:1">Flies in CS+ arm (shocked) <input type="number" id="plus" value="0" min="0"></label></div>
+        <button id="add">Add test</button></div>
+      <div class="card"><p class="step">Or paste rows</p>
+        <label>genotype, interval, replicate, CS− count, CS+ count (one per line, tabs or commas)
+          <textarea id="paste" placeholder="Canton-S, 0 min, 1, 42, 8&#10;dunce, 0 min, 1, 27, 23"></textarea></label>
+        <button class="ghost" id="doPaste">Paste rows</button></div>
+      <div class="card"><p class="step">Export</p><button id="csv">Download CSV</button></div>
+    </div>
+  </div>
+</div>
+<script src="../suite.js"></script>
+<script>
+chrome();
+let tests = [];
+const half = t => t.minus + t.plus ? 100 * (t.minus - t.plus) / (t.minus + t.plus) : NaN;
+function replicates() {  // average reciprocal halves sharing genotype + interval + replicate
+  const m = new Map();
+  tests.forEach(t => { const k = `${t.g}\u0000${t.iv}\u0000${t.rep}`; if (!m.has(k)) m.set(k, { group: `${t.g} · ${t.iv}`, g: t.g, iv: t.iv, rep: t.rep, halves: [] }); m.get(k).halves.push(half(t)); });
+  return [...m.values()].map(r => ({ ...r, pi: mean(r.halves.filter(Number.isFinite)) }));
+}
+function render() {
+  let h = `<table><tr><th>Genotype</th><th>Interval</th><th class="n">Rep</th><th class="n">CS−</th><th class="n">CS+</th><th class="n">Half PI</th><th></th></tr>`;
+  tests.forEach((t, i) => h += `<tr><td><input type="text" data-i="${i}" data-k="g" value="${esc(t.g)}"></td><td><input type="text" data-i="${i}" data-k="iv" value="${esc(t.iv)}"></td>
+    <td><input type="number" data-i="${i}" data-k="rep" value="${t.rep}" style="width:64px"></td><td><input type="number" data-i="${i}" data-k="minus" value="${t.minus}" style="width:72px"></td>
+    <td><input type="number" data-i="${i}" data-k="plus" value="${t.plus}" style="width:72px"></td><td class="n">${fmt(half(t), 1)}</td><td><button class="ghost" data-del="${i}">Delete</button></td></tr>`);
+  $("#table").innerHTML = tests.length ? h + "</table>" : '<p class="note">No tests yet.</p>';
+  const reps = replicates(), gs = byGroup(reps, "group", "pi");
+  if (!gs.length) { $("#chart").innerHTML = $("#summary").innerHTML = ""; return; }
+  barChart($("#chart"), gs, { ylabel: "Performance Index", title: "Learning / memory by group" });
+  summaryTable($("#summary"), gs, "PI");
+  let o = `<table><tr><th colspan="4">Did each group learn? One-sample t-test vs PI = 0</th></tr>`;
+  gs.forEach(g => { const t = ttest1(g.values); o += `<tr><td>${esc(g.group)}</td><td class="n">t = ${fmt(t.t)}</td><td class="n">df = ${fmt(t.df, 0)}</td><td class="n">p = ${fmtp(t.p)}</td></tr>`; });
+  $("#summary").insertAdjacentHTML("beforeend", o + "</table>");
+}
+const add = (g, iv, rep, minus, plus) => tests.push({ g: g.trim() || "?", iv: iv.trim() || "0 min", rep: Math.max(1, +rep || 1), minus: Math.max(0, +minus || 0), plus: Math.max(0, +plus || 0) });
+$("#add").onclick = () => { add($("#g").value, $("#iv").value, $("#rep").value, $("#minus").value, $("#plus").value); $("#minus").value = $("#plus").value = 0; render(); };
+$("#doPaste").onclick = () => { $("#paste").value.split(/\n/).forEach(l => { const c = l.split(/\t|,/).map(x => x.trim()); if (c.length >= 5 && c[3] !== "" && Number.isFinite(+c[3])) add(...c.slice(0, 5)); }); $("#paste").value = ""; render(); };
+$("#table").onchange = e => { const { i, k } = e.target.dataset; if (i == null) return; tests[i][k] = ["rep", "minus", "plus"].includes(k) ? Math.max(0, +e.target.value || 0) : e.target.value; render(); };
+$("#table").onclick = e => { const d = e.target.dataset.del; if (d != null) { tests.splice(+d, 1); render(); } };
+$("#csv").onclick = () => downloadCSV("tmaze_performance_index.csv", replicates().map(r => ({ genotype: r.g, interval: r.iv, replicate: r.rep, halves: r.halves.length, PI: fmt(r.pi, 2) })));
+render();
+</script>
+</body>
+</html>

@@ -5,7 +5,7 @@ A *Drosophila* data analysis tool suite, made by **Anik Sahai** (Harriet L. Wilk
 Tools for measuring *Drosophila* behavior, built for **PCB 4054C, Drosophila Genes &
 Behavior** at Florida Atlantic University.
 
-**Website: https://aniks22.github.io/larvatrack/**: six in-browser tools (larval foraging, sleep & activity from DAM files, CAFE feeding, climbing, flight, cold shock). Upload, correct by hand, get graphs, statistics and CSV. Automatic tracking and fly detection: AI analysis by request, asahai2024@fau.edu.
+**Website: https://aniks22.github.io/larvatrack/**: nine in-browser tools (larval foraging, sleep & activity from DAM files, CAFE feeding, climbing, flight, cold shock, genetic crosses, T-maze learning & memory, heat-shock/drowning/starvation stress). Each explains the biology, how to use it, how to read the results and the statistics; every count can be corrected by hand; output is graphs, tests and CSV. Automatic tracking and fly detection: AI analysis by request, asahai2024@fau.edu.
 
 | Folder | What it does |
 |---|---|

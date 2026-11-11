@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FlyBench · Stress &amp; Survival</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css">
+<style>#grid input{width:64px;margin:0;padding:5px}</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Stress &amp; survival</h1>
+  <p class="sub">For heat shock, drowning, starvation or any assay where you count how many flies in a vial are knocked
+    down (or dead) at set times. Draws the time course for each genotype and finds the time until half the flies are affected (T50).</p>
+
+  <div class="guide">
+    <details open><summary>The biology</summary>
+      <p>Under stress, cells switch on <b>heat shock proteins</b> (HSPs), chaperones such as Hsp70 that refold or clear damaged
+        proteins. Flies that make more HSPs, or that were briefly pre-stressed (<i>thermotolerance</i>), last longer at high temperature.</p>
+      <p>The <i>foraging</i> gene matters here too: PKG activity changes how neurons cope with heat and low oxygen, so rovers
+        and sitters differ in how fast they are knocked down by heat or submersion. Drowning tests tolerance to anoxia; starvation tests energy reserves.</p></details>
+    <details open><summary>How to use it</summary><ol>
+      <li>Pick the assay and type the times you checked (e.g. <i>0, 2, 4, 6, 8, 10</i> minutes).</li>
+      <li>Add one row per vial: genotype and how many flies it held.</li>
+      <li>Fill in how many flies were affected at each time point (cumulative). Fix any cell at any time; everything updates.</li></ol></details>
+    <details><summary>Reading the results</summary>
+      <p>The <b>time course</b> shows % affected over time, mean ± SEM across vials. A curve further right means more resistant flies.</p>
+      <p><b>T50</b> is when the curve for a vial crosses 50%, interpolated between checks. Vials that never reach 50% show “never” and are left out of the T50 comparison, so also compare the <b>% affected at the end</b>.</p></details>
+    <details><summary>The statistics</summary>
+      <span class="eq">% affected = affected / flies in vial × 100</span>
+      <span class="eq">T50: t₀ + (50 − %₀)/(%₁ − %₀) × (t₁ − t₀) between the checks either side of 50%</span>
+      <p>Groups are compared with Welch t-tests, with the vial as the replicate. With per-fly times, a Kaplan–Meier log-rank test is the textbook choice; per-vial counts at fixed checks are what this assay usually gives.</p></details>
+    <details><summary>Tips &amp; common mistakes</summary><ul>
+      <li>Counts are cumulative: a fly that recovers in a heat-shock assay still counts as knocked down once it fell.</li>
+      <li>Start timing the moment the vial enters the bath or water.</li>
+      <li>Keep flies per vial similar (10–20) and age-matched; older flies are knocked down sooner.</li></ul></details>
+  </div>
+
+  <div class="cols">
+    <div>
+      <div class="card"><h2>Time course</h2><div class="chart" id="curve"></div></div>
+      <div class="card"><h2>Compare genotypes</h2>
+        <label>Measure <select id="metric"><option value="t50">T50 (time to 50% affected)</option><option value="final">% affected at the last check</option></select></label>
+        <div class="chart" id="chart"></div><div class="scroll" id="summary"></div></div>
+      <div class="card"><h2>Data</h2><p class="note" style="margin-top:0">Affected flies at each check (cumulative). Edit any cell.</p><div class="scroll" id="grid"></div></div>
+    </div>
+    <div>
+      <div class="card"><p class="step">1 · Assay</p>
+        <label>Assay <select id="assay"><option>Heat shock knockdown</option><option>Drowning (immobile)</option><option>Starvation (dead)</option><option>Other</option></select></label>
+        <label>Check times <input type="text" id="times" value="0, 2, 4, 6, 8, 10"></label>
+        <label>Time unit <select id="unit"><option>min</option><option>h</option><option>s</option></select></label></div>
+      <div class="card"><p class="step">2 · Add a vial</p>
+        <label>Genotype <input type="text" id="g" value="Rover"></label>
+        <label>Flies in the vial <input type="number" id="n" value="10" min="1"></label>
+        <button id="add">Add vial</button></div>
+      <div class="card"><p class="step">Export</p><button id="csv">Download CSV</button></div>
+    </div>
+  </div>
+</div>
+<script src="../suite.js"></script>
+<script>
+chrome();
+let vials = [];
+const times = () => $("#times").value.split(/[,\s]+/).map(Number).filter(Number.isFinite);
+const unit = () => $("#unit").value;
+const curve = v => times().map((t, k) => [t, v.counts[k] == null || v.counts[k] === "" ? NaN : v.counts[k] / v.n]).filter(p => Number.isFinite(p[1]));
+const t50 = v => timeTo(curve(v), 0.5);
+const finalPct = v => { const c = curve(v); return c.length ? c.at(-1)[1] * 100 : NaN; };
+function grid() {
+  const ts = times();
+  let h = `<table><tr><th>Genotype</th><th class="n">Flies</th>${ts.map(t => `<th class="n">${t} ${unit()}</th>`).join("")}<th class="n">T50</th><th></th></tr>`;
+  vials.forEach((v, i) => h += `<tr><td><input type="text" data-i="${i}" data-k="g" value="${esc(v.g)}" style="width:110px"></td><td><input type="number" data-i="${i}" data-k="n" value="${v.n}"></td>
+    ${ts.map((_, k) => `<td><input type="number" min="0" data-i="${i}" data-c="${k}" value="${v.counts[k] ?? ""}"></td>`).join("")}
+    <td class="n">${Number.isFinite(t50(v)) ? fmt(t50(v), 1) : "never"}</td><td><button class="ghost" data-del="${i}">Delete</button></td></tr>`);
+  $("#grid").innerHTML = vials.length ? h + "</table>" : '<p class="note">Add a vial to start.</p>';
+}
+function render() {
+  const names = [...new Set(vials.map(v => v.g))], ts = times(), what = $("#assay").value.split(" (")[0];
+  // curve: mean ± SEM per group at each check
+  const W = 720, H = 320, L = 56, B = 44, T = 14, R = 150, tmax = Math.max(1, ...ts);
+  const x = t => L + (W - L - R) * t / tmax, y = f => T + (H - T - B) * (1 - f);
+  let s = `<svg viewBox="0 0 ${W} ${H}" font-family="Source Sans 3, system-ui, sans-serif">`;
+  for (let f = 0; f <= 1.0001; f += 0.25) s += `<line x1="${L}" x2="${W - R}" y1="${y(f)}" y2="${y(f)}" stroke="${f === 0.5 ? "#cc0000" : "#e6e9ee"}" ${f === 0.5 ? 'stroke-dasharray="4 4"' : ""}/><text x="${L - 6}" y="${y(f) + 4}" text-anchor="end" font-size="12" fill="#556170">${f * 100}%</text>`;
+  ts.forEach(t => s += `<text x="${x(t)}" y="${H - B + 18}" text-anchor="middle" font-size="12" fill="#556170">${t}</text>`);
+  s += `<text x="${(L + W - R) / 2}" y="${H - 6}" text-anchor="middle" font-size="12">Time (${unit()})</text><text transform="translate(14 ${(H - B) / 2}) rotate(-90)" text-anchor="middle" font-size="12">% ${esc(what.toLowerCase())}</text>`;
+  names.forEach((g, gi) => { const vs = vials.filter(v => v.g === g), c = PALETTE[gi % PALETTE.length], pts = [];
+    ts.forEach((t, k) => { const fs = vs.map(v => v.counts[k] === "" || v.counts[k] == null ? NaN : v.counts[k] / v.n).filter(Number.isFinite); if (!fs.length) return;
+      const m = mean(fs), e = fs.length > 1 ? sem(fs) : 0; pts.push([x(t), y(m)]);
+      if (e) s += `<path d="M${x(t)} ${y(m - e)}V${y(m + e)}" stroke="${c}" stroke-width="1.5"/>`; });
+    s += `<polyline fill="none" stroke="${c}" stroke-width="2.5" points="${pts.map(p => p.join(",")).join(" ")}"/>` + pts.map(p => `<circle cx="${p[0]}" cy="${p[1]}" r="3.5" fill="${c}"/>`).join("");
+    s += `<rect x="${W - R + 14}" y="${T + gi * 22}" width="14" height="14" fill="${c}"/><text x="${W - R + 34}" y="${T + gi * 22 + 12}" font-size="12">${esc(g)} (n = ${vs.length})</text>`; });
+  $("#curve").innerHTML = vials.length ? s + "</svg>" : "";
+  const k = $("#metric").value, rows = vials.map(v => ({ group: v.g, v: k === "t50" ? t50(v) : finalPct(v) })), gs = byGroup(rows, "group", "v");
+  if (gs.length) { const label = k === "t50" ? `T50 (${unit()})` : "% affected at last check"; barChart($("#chart"), gs, { ylabel: label, title: label }); summaryTable($("#summary"), gs, k === "t50" ? unit() : "%");
+    const never = vials.filter(v => !Number.isFinite(t50(v))).length; if (k === "t50" && never) $("#summary").insertAdjacentHTML("beforeend", `<p class="note">${never} vial(s) never reached 50% and are left out of T50.</p>`); }
+  else $("#chart").innerHTML = $("#summary").innerHTML = "";
+}
+const all = () => { grid(); render(); };
+$("#add").onclick = () => { vials.push({ g: $("#g").value.trim() || "?", n: Math.max(1, +$("#n").value || 1), counts: times().map((_, k) => k === 0 ? 0 : "") }); all(); };
+$("#grid").onchange = e => { const { i, k, c } = e.target.dataset; if (i == null) return;
+  if (c != null) vials[i].counts[c] = e.target.value === "" ? "" : Math.min(vials[i].n, Math.max(0, +e.target.value));
+  else vials[i][k] = k === "n" ? Math.max(1, +e.target.value || 1) : e.target.value; all(); };
+$("#grid").onclick = e => { const d = e.target.dataset.del; if (d != null) { vials.splice(+d, 1); all(); } };
+["#times", "#unit", "#assay"].forEach(s => $(s).onchange = all); $("#metric").onchange = render;
+$("#csv").onclick = () => { const ts = times(); downloadCSV("stress_time_course.csv", vials.map((v, i) => Object.assign({ vial: i + 1, genotype: v.g, flies: v.n },
+  ...ts.map((t, k) => ({ [`affected_at_${t}${unit()}`]: v.counts[k] ?? "" })), { T50: fmt(t50(v), 2), final_pct: fmt(finalPct(v), 1) }))); };
+all();
+</script>
+</body>
+</html>

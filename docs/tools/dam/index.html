@@ -12,11 +12,13 @@
   <h1>Sleep &amp; Activity (DAM)</h1>
   <p class="sub">Turns raw TriKinetics Drosophila Activity Monitor files into activity and sleep per fly,
     then compares groups. Sleep is any run of at least 5 minutes with no beam crossings.</p>
-  <div class="how"><b>How it works</b><ol>
-    <li>Upload one or more <code>MonitorN.txt</code> files from DAMSystem3 (1-minute bins).</li>
-    <li>Say which tubes belong to which group, e.g. <code>Male control: 1-8</code>.</li>
-    <li>Each fly's data stops at its death, so dead flies don't read as asleep. Untick any tube to leave it out. Every number updates.</li>
-    <li>Pick a measure to graph. Download the per-fly table as CSV.</li></ol></div>
+  <div class="guide">
+    <details open><summary>The biology</summary><p>Flies sleep: they have long bouts of stillness with a raised arousal threshold, regulated by a circadian clock and by sleep pressure. By convention, <b>5 or more minutes without movement</b> counts as sleep (Hendricks et al., 2000; Shaw et al., 2000).</p><p>The DAM holds each fly in its own tube and counts every time it crosses an infrared beam, minute by minute, for days. Caffeine keeps flies awake mainly through PKA signalling rather than the adenosine receptor it blocks in humans (Wu et al., 2009).</p></details>
+    <details open><summary>How to use it</summary><ol><li>Upload one or more <code>MonitorN.txt</code> files from DAMSystem3 (1-minute bins).</li><li>List which tubes belong to which group, one per line, e.g. <code>Male control: 1-8</code>.</li><li>Each fly's data stops at its death so a dead fly isn't counted as asleep. Untick any tube to leave it out.</li><li>Pick a measure to graph and download the per-fly CSV.</li></ol></details>
+    <details><summary>Reading the results</summary><p><b>Total sleep</b> is minutes asleep per 24 h alive. <b>Bouts per day</b> and <b>bout length</b> describe how consolidated sleep is: more, shorter bouts mean fragmented sleep. <b>Day vs night sleep</b> uses the monitor's own light sensor. The <b>hourly profile</b> shows when in the day flies sleep.</p><p><b>Survival</b> (hours alive) is reported too: a drug that kills flies early is its own result.</p></details>
+    <details><summary>The statistics</summary><span class="eq">sleep bout = run of ≥ 5 consecutive minutes with 0 beam crossings</span><span class="eq">sleep per day = minutes in bouts ÷ (minutes analysed ÷ 1440)</span><span class="eq">death = end of the last clock hour with ≥ 3 crossings</span><p>Each fly is one replicate. Groups are compared with Welch t-tests, which don't assume equal variances; with 4 groups, remember several tests are being run at once.</p></details>
+    <details><summary>Tips &amp; common mistakes</summary><ul><li>Skip the first day (acclimation) with the setting: sleep on day 1 is unusual.</li><li>Empty tubes and escaped flies read as 0 forever: untick them.</li><li>Window light changes with the weather; an incubator gives a cleaner light cycle.</li></ul></details>
+  </div>
 
   <div class="cols">
     <div>

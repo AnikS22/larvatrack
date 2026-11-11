@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FlyBench · Genetic Crosses</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>Genetic crosses</h1>
+  <p class="sub">Checks whether the offspring you counted fit the ratio Mendelian genetics predicts, using a
+    chi-square goodness-of-fit test.</p>
+
+  <div class="guide">
+    <details open><summary>The biology</summary>
+      <p>Each fly carries two copies of every autosomal gene. When parents are crossed, each passes one copy at
+        random, so offspring phenotypes fall into predictable ratios: a monohybrid cross of two heterozygotes gives
+        <b>3 : 1</b> (dominant : recessive), a dihybrid cross <b>9 : 3 : 3 : 1</b>, a test cross to a homozygous recessive <b>1 : 1</b>.</p>
+      <p>X-linked genes such as <i>white</i> (w<sup>1118</sup>) break the symmetry between sexes, because males have one X.
+        That is why reciprocal crosses with <i>white</i> give different results in sons and daughters: score each sex as its own category.</p></details>
+    <details open><summary>How to use it</summary><ol>
+      <li>Pick the cross, or choose <i>Custom</i> and type your own ratio.</li>
+      <li>Name each phenotype class and type how many offspring you scored in it.</li>
+      <li>The table, chart and test update as you type. Download the CSV for your report.</li></ol></details>
+    <details><summary>Reading the results</summary>
+      <p><b>Expected</b> is what the ratio predicts for your total. The chart puts observed and expected side by side.</p>
+      <p>If <b>p ≥ 0.05</b>, your counts are consistent with the predicted ratio: the differences are the size chance alone
+        would usually produce. If <b>p &lt; 0.05</b>, they are not, which can mean linkage, a lethal genotype, mis-scored flies,
+        or a wrong assumption about the parents' genotypes.</p></details>
+    <details><summary>The statistics</summary>
+      <span class="eq">χ² = Σ (observed − expected)² / expected</span>
+      <span class="eq">degrees of freedom = number of classes − 1</span>
+      <p>The p-value is the chance of a χ² at least this large if the ratio were true. A good fit never <i>proves</i> the
+        hypothesis; it only fails to reject it.</p></details>
+    <details><summary>Tips &amp; common mistakes</summary><ul>
+      <li>Every expected count should be 5 or more; with fewer flies the test is unreliable (a warning appears).</li>
+      <li>Use raw counts, never percentages.</li>
+      <li>Score virgin-collected crosses only: a non-virgin female can carry sperm from her brothers.</li></ul></details>
+  </div>
+
+  <div class="cols">
+    <div>
+      <div class="card"><h2>Observed vs expected</h2><div class="chart" id="chart"></div><div class="scroll" id="table"></div>
+        <div id="verdict" class="req" style="margin:14px 0 0"></div></div>
+    </div>
+    <div>
+      <div class="card"><p class="step">1 · Cross</p>
+        <label>Predicted ratio <select id="preset">
+          <option value="3:1|Dominant,Recessive">Monohybrid F2 (3 : 1)</option>
+          <option value="1:2:1|Homozygous A,Heterozygous,Homozygous a">Incomplete dominance F2 (1 : 2 : 1)</option>
+          <option value="1:1|Dominant,Recessive">Test cross (1 : 1)</option>
+          <option value="9:3:3:1|A_ B_,A_ bb,aa B_,aa bb">Dihybrid F2 (9 : 3 : 3 : 1)</option>
+          <option value="1:1:1:1|A B,A b,a B,a b">Dihybrid test cross (1 : 1 : 1 : 1)</option>
+          <option value="1:1:1:1|Red-eyed females,Red-eyed males,White-eyed females,White-eyed males">X-linked: w/+ female × w male (1 : 1 : 1 : 1)</option>
+          <option value="2:1:1|Red-eyed females,Red-eyed males,White-eyed males">X-linked: w/+ female × + male (2 : 1 : 1)</option>
+          <option value="custom|Class 1,Class 2">Custom…</option></select></label>
+        <label id="customWrap" hidden>Custom ratio (e.g. 9:7) <input type="text" id="custom" value="9:7"></label></div>
+      <div class="card"><p class="step">2 · Counts</p><div id="inputs"></div>
+        <div class="row"><button class="ghost" id="add">+ Class</button><button class="ghost" id="remove">− Class</button></div></div>
+      <div class="card"><p class="step">3 · Export</p><button id="csv">Download CSV</button></div>
+    </div>
+  </div>
+</div>
+<script src="../suite.js"></script>
+<script>
+chrome();
+let classes = [];
+function load() {
+  const [r, names] = $("#preset").value.split("|"), custom = r === "custom";
+  $("#customWrap").hidden = !custom;
+  const ratio = (custom ? $("#custom").value : r).split(/[:\s,]+/).map(Number).filter(x => x > 0);
+  const nm = names.split(",");
+  classes = ratio.map((x, i) => ({ name: classes[i] && custom ? classes[i].name : (nm[i] || `Class ${i + 1}`), ratio: x, n: classes[i] ? classes[i].n : 0 }));
+  $("#inputs").innerHTML = classes.map((c, i) => `<div class="row" style="margin-bottom:6px"><input type="text" data-i="${i}" data-k="name" value="${esc(c.name)}" style="flex:2;margin:0">
+    <input type="number" min="0" data-i="${i}" data-k="n" value="${c.n}" style="flex:1;margin:0" aria-label="count"></div>`).join("");
+  render();
+}
+function render() {
+  const obs = classes.map(c => c.n), N = obs.reduce((s, x) => s + x, 0);
+  if (!classes.length) return;
+  const g = chisqGOF(obs, classes.map(c => c.ratio));
+  let h = `<table><tr><th>Class</th><th class="n">Ratio</th><th class="n">Observed</th><th class="n">Expected</th><th class="n">(O − E)² / E</th></tr>`;
+  classes.forEach((c, i) => h += `<tr><td>${esc(c.name)}</td><td class="n">${c.ratio}</td><td class="n">${c.n}</td><td class="n">${fmt(g.exp[i], 1)}</td><td class="n">${N ? fmt((c.n - g.exp[i]) ** 2 / g.exp[i], 3) : "–"}</td></tr>`);
+  $("#table").innerHTML = h + `<tr><th colspan="2">Total</th><th class="n">${N}</th><th class="n">${N}</th><th class="n">χ² = ${fmt(g.x2, 3)}</th></tr></table>`;
+  // grouped bars: observed (blue) vs expected (outline)
+  const W = 720, H = 320, L = 56, B = 50, T = 14, R = 14, bw = (W - L - R) / classes.length, ymax = Math.max(1, ...obs, ...g.exp) * 1.15, y = v => T + (H - T - B) * (1 - v / ymax);
+  let s = `<svg viewBox="0 0 ${W} ${H}" font-family="Source Sans 3, system-ui, sans-serif">`;
+  const step = niceStep(ymax / 5); for (let v = 0; v <= ymax; v += step) s += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="#e6e9ee"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="12" fill="#556170">${+v.toFixed(6)}</text>`;
+  classes.forEach((c, i) => { const x = L + i * bw + bw * 0.15, w = bw * 0.33;
+    s += `<rect x="${x}" y="${y(c.n)}" width="${w}" height="${y(0) - y(c.n)}" fill="#003366"/><rect x="${x + w + 4}" y="${y(g.exp[i])}" width="${w}" height="${y(0) - y(g.exp[i])}" fill="#fff" stroke="#cc0000" stroke-width="2" stroke-dasharray="5 3"/>
+      <text x="${x + w + 2}" y="${H - B + 18}" text-anchor="middle" font-size="12">${esc(c.name)}</text>`; });
+  s += `<rect x="${W - 200}" y="${T}" width="12" height="12" fill="#003366"/><text x="${W - 182}" y="${T + 11}" font-size="12">Observed</text><rect x="${W - 110}" y="${T}" width="12" height="12" fill="#fff" stroke="#cc0000" stroke-dasharray="3 2"/><text x="${W - 92}" y="${T + 11}" font-size="12">Expected</text></svg>`;
+  $("#chart").innerHTML = s;
+  const small = g.exp.some(e => e < 5);
+  $("#verdict").innerHTML = !N ? "Type your counts to run the test." :
+    `<b>χ² = ${fmt(g.x2, 3)}, df = ${g.df}, p = ${fmtp(g.p)}.</b> ` + (g.p >= 0.05 ? "Your counts fit the predicted ratio: the differences are within what chance produces." :
+      "Your counts do <b>not</b> fit the predicted ratio (p &lt; 0.05). Check the parents' genotypes, scoring, linkage or lethality.") +
+    (small ? ' <span class="err">Some expected counts are below 5, so treat this p-value with caution.</span>' : "");
+}
+$("#preset").onchange = () => { classes = []; load(); }; $("#custom").oninput = load;
+$("#inputs").oninput = e => { const { i, k } = e.target.dataset; if (i == null) return; classes[i][k] = k === "n" ? Math.max(0, +e.target.value || 0) : e.target.value; render(); };
+$("#add").onclick = () => { classes.push({ name: `Class ${classes.length + 1}`, ratio: 1, n: 0 }); $("#preset").value = "custom|Class 1,Class 2"; $("#custom").value = classes.map(c => c.ratio).join(":"); load(); };
+$("#remove").onclick = () => { if (classes.length > 2) { classes.pop(); $("#preset").value = "custom|Class 1,Class 2"; $("#custom").value = classes.map(c => c.ratio).join(":"); load(); } };
+$("#csv").onclick = () => { const g = chisqGOF(classes.map(c => c.n), classes.map(c => c.ratio));
+  downloadCSV("cross_chisquare.csv", classes.map((c, i) => ({ class: c.name, ratio: c.ratio, observed: c.n, expected: fmt(g.exp[i], 2), chi2_total: fmt(g.x2, 4), df: g.df, p: fmtp(g.p) }))); };
+load();
+</script>
+</body>
+</html>

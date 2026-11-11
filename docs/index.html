@@ -81,16 +81,29 @@ dl.labels dd{margin:0}
 footer{background:#0b1f33;color:#c7d2de;font-size:14px}
 footer .wrap{padding-top:28px;padding-bottom:28px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 footer a{color:#fff}
+
+.start{padding:56px 0;border-bottom:1px solid var(--line)}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:18px 0 22px}
+.steps div{border:1px solid var(--line);border-radius:8px;padding:16px;background:#fff}
+.steps b{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--fau-red);color:#fff;font-size:15px}
+.steps h3{font:700 18px/1.3 var(--serif);color:var(--fau-blue);margin:10px 0 4px}
+.steps p{margin:0;color:var(--dim);font-size:15px}
+details.stats{border:1px solid var(--line);border-left:4px solid var(--fau-blue);border-radius:6px;padding:12px 18px;background:var(--wash)}
+details.stats[open]{border-left-color:var(--fau-red)}
+details.stats summary{cursor:pointer;font:700 19px/1.3 var(--serif);color:var(--fau-blue)}
+details.stats dl{display:grid;grid-template-columns:minmax(150px,max-content) 1fr;gap:8px 18px;margin:14px 0 4px;font-size:15px}
+details.stats dt{font-weight:700;color:var(--fau-blue)} details.stats dd{margin:0}
+@media(max-width:600px){details.stats dl{grid-template-columns:1fr} details.stats dd{margin-bottom:6px}}
 </style>
 </head>
 <body>
 
 <div class="hero"><div class="wrap">
   <h1 class="name">FlyBench</h1>
-  <p class="tagline">A Drosophila data analysis tool suite</p>
+  <p class="tagline">A <i>Drosophila</i> data analysis tool suite</p>
   <div class="byline"><b>Made by Anik Sahai</b><span>Harriet L. Wilkes Honors College · Florida Atlantic University</span></div>
-  <p class="lede">Upload your videos, photos or monitor files and get the numbers, graphs and statistics for six
-    classic <i>Drosophila</i> behavior assays. Every tool runs in your browser, so your data never leaves your
+  <p class="lede">Upload your videos, photos or monitor files and get the numbers, graphs and statistics for nine
+    classic <i>Drosophila</i> genetics and behavior assays. Every tool runs in your browser, so your data never leaves your
     computer, and every automatic count can be corrected by hand.</p>
   <div class="index">
     <a href="#larva"><b>Larval foraging</b><span>Path length, rover vs sitter</span></a>
@@ -99,10 +112,36 @@ footer a{color:#fff}
     <a href="#climbing"><b>Climbing</b><span>Negative geotaxis</span></a>
     <a href="#flight"><b>Flight</b><span>Fly paper</span></a>
     <a href="#cold"><b>Cold shock</b><span>Paralysis &amp; recovery</span></a>
+    <a href="#crosses"><b>Genetic crosses</b><span>Chi-square vs Mendel</span></a>
+    <a href="#learning"><b>Learning &amp; memory</b><span>T-maze, dunce</span></a>
+    <a href="#stress"><b>Stress &amp; survival</b><span>Heat shock, drowning</span></a>
   </div>
 </div></div>
 
-<section class="tool" id="larva"><div class="wrap">
+<section class="start" id="start"><div class="wrap">
+  <p class="eyebrow">Start here</p>
+  <h2>How FlyBench works</h2>
+  <div class="steps">
+    <div><b>1</b><h3>Pick your assay</h3><p>Each tool below explains the biology, what it measures, and exactly how to run it.</p></div>
+    <div><b>2</b><h3>Upload your data</h3><p>Videos, photos, monitor files or typed counts. Nothing is uploaded to a server: it all stays in your browser.</p></div>
+    <div><b>3</b><h3>Check and correct</h3><p>Every count, mark and time can be fixed by hand, and every graph updates instantly.</p></div>
+    <div><b>4</b><h3>Get results</h3><p>Graphs, summary statistics and significance tests, plus a CSV to paste into your lab report.</p></div>
+  </div>
+  <details class="stats"><summary>Statistics in plain English</summary>
+    <dl>
+      <dt>Mean</dt><dd>The average of your replicates.</dd>
+      <dt>SD (standard deviation)</dt><dd>How spread out the replicates are. Use it to describe variability.</dd>
+      <dt>SEM (standard error of the mean)</dt><dd>SD ÷ √n: how precisely the mean is known. Shrinks as you add replicates. Error bars in FlyBench show SEM unless they say SD.</dd>
+      <dt>Replicate (n)</dt><dd>One independent measurement: a vial, a tube, a fly in its own DAM tube. Flies tested together in one vial are one replicate, not many.</dd>
+      <dt>p-value</dt><dd>If there were really no difference, the chance of seeing a difference at least this big. Below 0.05 is called “significant”. It is not the chance your hypothesis is true.</dd>
+      <dt>Welch t-test</dt><dd>Compares the means of two groups without assuming they vary equally. Used for continuous measures (minutes of sleep, µL eaten, % climbed).</dd>
+      <dt>One-sample t-test</dt><dd>Asks whether a group's mean differs from a fixed value, e.g. whether a Performance Index is above 0 (did the flies learn at all?).</dd>
+      <dt>Chi-square (χ²)</dt><dd>For counts in categories. <i>Goodness of fit</i> compares counts to a predicted ratio (crosses); <i>independence</i> asks whether category depends on group (flight intervals × genotype).</dd>
+      <dt>Many comparisons</dt><dd>Run 20 tests and about one will be “significant” by chance. With many groups, be cautious, or apply a Bonferroni correction (multiply each p by the number of tests).</dd>
+    </dl></details>
+</div></section>
+
+<section class="tool alt" id="larva"><div class="wrap">
   <div class="phead"><span class="num">01</span><h2>Larval foraging</h2></div>
   <p class="what">Measures how far a larva crawls on a plate, the standard readout for the <i>foraging</i> gene:
     rover larvae cover more ground than sitters.</p>
@@ -125,7 +164,7 @@ footer a{color:#fff}
   </div>
 </div></section>
 
-<section class="tool alt" id="dam"><div class="wrap">
+<section class="tool" id="dam"><div class="wrap">
   <div class="phead"><span class="num">02</span><h2>Sleep &amp; activity</h2></div>
   <p class="what">Turns raw Drosophila Activity Monitor (DAM) files into activity, sleep and sleep structure for
     every fly, then compares groups, for example flies fed caffeine against controls.</p>
@@ -148,7 +187,7 @@ footer a{color:#fff}
   </div>
 </div></section>
 
-<section class="tool" id="cafe"><div class="wrap">
+<section class="tool alt" id="cafe"><div class="wrap">
   <div class="phead"><span class="num">03</span><h2>Feeding (CAFE)</h2></div>
   <p class="what">Measures how much flies drank from each capillary in the Capillary Feeder assay, from a single
     photo of the tubes beside a ruler.</p>
@@ -171,7 +210,7 @@ footer a{color:#fff}
   </div>
 </div></section>
 
-<section class="tool alt" id="climbing"><div class="wrap">
+<section class="tool" id="climbing"><div class="wrap">
   <div class="phead"><span class="num">04</span><h2>Climbing (negative geotaxis)</h2></div>
   <p class="what">After a tap knocks them to the bottom, healthy flies climb straight back up. This scores where
     every fly is, second by second, in four quadrants of the vial.</p>
@@ -194,7 +233,7 @@ footer a{color:#fff}
   </div>
 </div></section>
 
-<section class="tool" id="flight"><div class="wrap">
+<section class="tool alt" id="flight"><div class="wrap">
   <div class="phead"><span class="num">05</span><h2>Flight (fly paper)</h2></div>
   <p class="what">Flies dropped down a tube catch the sticky paper as they recover flight. Strong fliers stick high;
     weak ones fall to the water. This counts flies in each interval.</p>
@@ -217,7 +256,7 @@ footer a{color:#fff}
   </div>
 </div></section>
 
-<section class="tool alt" id="cold"><div class="wrap">
+<section class="tool" id="cold"><div class="wrap">
   <div class="phead"><span class="num">06</span><h2>Cold shock</h2></div>
   <p class="what">Times how quickly flies on ice stop moving, and how long they take to wake once warm again.</p>
   <div class="grid2">
@@ -235,6 +274,76 @@ footer a{color:#fff}
         <li>Step frame by frame for precision; every time is also an editable box.</li>
         <li>Save each tube and compare genotypes.</li></ol></div>
       <div class="actions"><a class="btn" href="tools/coldshock/">Open the cold-shock tool</a></div>
+    </div>
+  </div>
+</div></section>
+
+
+<section class="tool alt" id="crosses"><div class="wrap">
+  <div class="phead"><span class="num">07</span><h2>Genetic crosses</h2></div>
+  <p class="what">Checks whether the offspring you scored fit the ratio Mendelian genetics predicts, from simple 3 : 1 crosses to
+    dihybrid and X-linked <i>white</i> crosses.</p>
+  <div class="grid2">
+    <figure class="demo"><img src="img/crosses_demo.png" alt="Observed vs expected bars for a 9:3:3:1 dihybrid cross" loading="lazy">
+      <figcaption><b>Demo</b>Mendel's own pea counts against 9 : 3 : 3 : 1: χ² = 0.47, p = 0.93, a good fit.</figcaption></figure>
+    <div>
+      <dl class="labels">
+        <dt>Input</dt><dd>Offspring counts per phenotype class</dd>
+        <dt>Output</dt><dd>Expected counts, χ², df, p, a plain-English verdict; CSV</dd>
+        <dt>Presets</dt><dd><span class="chip">3 : 1</span><span class="chip">1 : 2 : 1</span><span class="chip">1 : 1</span><span class="chip">9 : 3 : 3 : 1</span><span class="chip">X-linked</span><span class="chip">custom</span></dd>
+        <dt>Runs</dt><dd><span class="chip live">In your browser</span></dd>
+      </dl>
+      <div class="how"><b>How it works</b><ol>
+        <li>Pick the cross (or type your own ratio).</li>
+        <li>Type how many offspring you scored in each class.</li>
+        <li>Read the verdict: does your cross fit Mendel?</li></ol></div>
+      <div class="actions"><a class="btn" href="tools/crosses/">Open the genetic crosses tool</a></div>
+    </div>
+  </div>
+</div></section>
+
+<section class="tool" id="learning"><div class="wrap">
+  <div class="phead"><span class="num">08</span><h2>Learning &amp; memory</h2></div>
+  <p class="what">Scores olfactory conditioning in the T-maze: after an odor is paired with a shock, do flies avoid it? Compares
+    learning mutants such as <i>dunce</i> with wild type, right after training or hours later.</p>
+  <div class="grid2">
+    <figure class="demo"><img src="img/learning_demo.png" alt="Performance Index bars for wild type and dunce" loading="lazy">
+      <figcaption><b>Demo</b>Example numbers showing how results look: wild type vs <i>dunce</i>, one dot per replicate.</figcaption></figure>
+    <div>
+      <dl class="labels">
+        <dt>Input</dt><dd>Flies in each T-maze arm per test</dd>
+        <dt>Output</dt><dd>Performance Index per replicate and group; CSV</dd>
+        <dt>Statistics</dt><dd>One-sample t-test vs 0; Welch t-test between groups</dd>
+        <dt>Runs</dt><dd><span class="chip live">In your browser</span></dd>
+      </dl>
+      <div class="how"><b>How it works</b><ol>
+        <li>Type (or paste) the arm counts for each test, with genotype and retention interval.</li>
+        <li>Reciprocal halves with the same replicate number are averaged automatically.</li>
+        <li>Edit or delete any test; the PI and stats update.</li></ol></div>
+      <div class="actions"><a class="btn" href="tools/learning/">Open the learning &amp; memory tool</a></div>
+    </div>
+  </div>
+</div></section>
+
+<section class="tool alt" id="stress"><div class="wrap">
+  <div class="phead"><span class="num">09</span><h2>Stress &amp; survival</h2></div>
+  <p class="what">For heat-shock, drowning and starvation assays: how many flies in each vial are knocked down or dead at each
+    check, and how long until half of them are (T50).</p>
+  <div class="grid2">
+    <figure class="demo"><img src="img/stress_demo.png" alt="Percent knocked down over time for two strains" loading="lazy">
+      <figcaption><b>Demo</b>Example numbers showing how results look: % knocked down over time, mean ± SEM across vials.</figcaption></figure>
+    <div>
+      <dl class="labels">
+        <dt>Input</dt><dd>Affected flies per vial at each check time</dd>
+        <dt>Output</dt><dd>Time course per genotype, T50, % affected at the end; CSV</dd>
+        <dt>Statistics</dt><dd>Mean ± SEM; Welch t-test between genotypes</dd>
+        <dt>Runs</dt><dd><span class="chip live">In your browser</span></dd>
+      </dl>
+      <div class="how"><b>How it works</b><ol>
+        <li>Choose the assay and the times you checked.</li>
+        <li>Add a row per vial and fill in the cumulative counts.</li>
+        <li>Read the curves and compare T50 between genotypes.</li></ol></div>
+      <div class="actions"><a class="btn" href="tools/stress/">Open the stress &amp; survival tool</a></div>
     </div>
   </div>
 </div></section>

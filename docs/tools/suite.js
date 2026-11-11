@@ -78,6 +78,29 @@ function chisq(table) {
   const df = (R - 1) * (C - 1);
   return { x2, df, p: df > 0 ? gammaQ(df / 2, x2 / 2) : NaN };
 }
+// Chi-square goodness of fit: observed counts vs expected proportions (any scale, e.g. 9:3:3:1).
+function chisqGOF(obs, ratio) {
+  const N = obs.reduce((s, x) => s + x, 0), R = ratio.reduce((s, x) => s + x, 0);
+  const exp = ratio.map(r => N * r / R); let x2 = 0;
+  obs.forEach((o, i) => { if (exp[i] > 0) x2 += (o - exp[i]) ** 2 / exp[i]; });
+  const df = obs.length - 1;
+  return { x2, df, p: df > 0 ? gammaQ(df / 2, x2 / 2) : NaN, exp };
+}
+// One-sample t-test against mu (two-sided).
+function ttest1(a, mu = 0) {
+  if (a.length < 2 || !(sd(a) > 0)) return { t: NaN, df: NaN, p: NaN };
+  const t = (mean(a) - mu) / sem(a), df = a.length - 1;
+  return { t, df, p: ibeta(df / 2, 0.5, df / (df + t * t)) };
+}
+// First time a rising curve [[t, fraction]] reaches `level`, by linear interpolation; NaN if never.
+function timeTo(curve, level = 0.5) {
+  for (let i = 0; i < curve.length; i++) {
+    const [t, f] = curve[i]; if (f < level) continue;
+    if (i === 0) return t;
+    const [t0, f0] = curve[i - 1]; return t0 + (level - f0) / (f - f0) * (t - t0);
+  }
+  return NaN;
+}
 const fmt = (x, d = 2) => Number.isFinite(x) ? x.toFixed(d) : "–";
 const fmtp = p => !Number.isFinite(p) ? "–" : p < 0.001 ? "< 0.001" : p.toFixed(3);
 
@@ -182,6 +205,9 @@ if (typeof module !== "undefined" && require.main === module) {
   near(w.t, -2.46, 0.01); near(w.p, 0.0210, 0.001);          // Wikipedia Welch example 1 (scipy: p = 0.02101)
   const c = chisq([[10, 20, 30], [20, 20, 20]]); near(c.x2, 5.3333, 1e-3); near(c.p, 0.0695, 1e-3);  // by hand: E = 15,20,25 per row
   near(gammaQ(1, 2), Math.exp(-2), 1e-10);
+  const gof = chisqGOF([315, 108, 101, 32], [9, 3, 3, 1]); near(gof.x2, 0.470, 1e-3); near(gof.p, 0.925, 1e-3);  // Mendel's peas
+  const t1 = ttest1([1, 2, 3, 4, 5], 0); near(t1.t, 4.2426, 1e-3); near(t1.p, 0.01324, 1e-4);   // scipy ttest_1samp
+  near(timeTo([[0, 0], [10, 0.4], [20, 0.8]]), 12.5, 1e-9); if (!Number.isNaN(timeTo([[0, 0], [5, 0.3]]))) throw new Error("timeTo");
   const g = parseGroups("Male control: 1-3, 7\nbad line\nF caf: 10");
   if (JSON.stringify(g) !== '{"Male control":[1,2,3,7],"F caf":[10]}') throw new Error(JSON.stringify(g));
   console.log("suite.js self-check OK");

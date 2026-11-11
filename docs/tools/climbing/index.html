@@ -13,11 +13,13 @@
   <h1>Climbing (negative geotaxis)</h1>
   <p class="sub">Tap the vial so the flies fall to the bottom; healthy flies climb straight back up. This scores where every
     fly is, second by second, in four equal quadrants from Quadrant 1 (bottom) to Quadrant 4 (top).</p>
-  <div class="how"><b>How it works</b><ol>
-    <li>Upload the video. Scrub to the moment the flies land after the tap and press <b>This is 0 s</b>.</li>
-    <li><b>Vials:</b> drag a box over each vial, from the bottom of the plug to the bottom of the vial. Name each vial's genotype.</li>
-    <li><b>Flies:</b> for each second, click every fly. Click a circle to remove it.</li>
-    <li>Save the trial, then do the next video. <b>Edit</b> any saved trial to correct it later.</li></ol></div>
+  <div class="guide">
+    <details open><summary>The biology</summary><p>Tapped to the bottom of a vial, flies instinctively climb up: <b>negative geotaxis</b>, a startle response. It needs intact motor neurons, muscle and dopamine signalling, so it falls with age and in models of Parkinson's disease and other neurodegeneration.</p><p>The climbing assay is fast and cheap; the DAM measures spontaneous activity over days. Together they separate “can't move” from “doesn't want to”.</p></details>
+    <details open><summary>How to use it</summary><ol><li>Upload the video. Scrub to the moment the flies land after the tap and press <b>This is 0 s</b>.</li><li><b>Vials:</b> drag a box over each vial, from the bottom of the plug to the bottom of the vial, and name its genotype.</li><li><b>Flies:</b> click every fly in each second's frame. Click a circle again to remove it.</li><li>Save the trial. <b>Edit</b> any saved trial to correct it.</li></ol></details>
+    <details><summary>Reading the results</summary><p>The <b>stacked chart</b> shows where flies are at the chosen second, from Quadrant 1 (bottom) to 4 (top). <b>% in top half</b> and the <b>climbing score</b> boil each vial down to one number for comparing genotypes. Step through 1–5 s to see the speed of climbing.</p></details>
+    <details><summary>The statistics</summary><span class="eq">climbing score = (Q2 + 2·Q3 + 3·Q4) ÷ (3 × flies) → 0 all at bottom, 1 all at top</span><p>Each vial in each trial is a replicate. Welch t-tests compare genotypes at the chosen second.</p></details>
+    <details><summary>Tips &amp; common mistakes</summary><ul><li>Tap the same way every time (e.g. three firm taps).</li><li>Flies hidden at the plug still count: put them in Quadrant 4.</li><li>Rest flies at least a minute between trials.</li></ul></details>
+  </div>
 
   <div class="cols">
     <div>
