@@ -3,7 +3,7 @@
 Tools for measuring *Drosophila* behavior, built for **PCB 4054C, Drosophila Genes &
 Behavior** at Florida Atlantic University.
 
-**Website: https://aniks22.github.io/larvatrack/** (includes the in-browser larva tracer)
+**Website: https://aniks22.github.io/larvatrack/**: all six PCB 4054C projects (larval foraging, caffeine & sleep, CAFE feeding, negative geotaxis, flight, cold shock) with demos, figures, reports and the in-browser larva tracer.
 
 | Folder | What it does |
 |---|---|

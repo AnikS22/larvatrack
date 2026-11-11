@@ -1,180 +1,335 @@
 <!doctype html>
 <html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Fly Lab Tools</title>
-<meta name="description" content="Tools for measuring Drosophila behavior, built for PCB 4054C at Florida Atlantic University.">
+<title>Drosophila Behavior Projects</title>
+<meta name="description" content="Drosophila genetics and behavior projects, with the tools built to measure them. PCB 4054C, Harriet L. Wilkes Honors College, Florida Atlantic University.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet">
 <style>
-:root{--ground:#14161a;--panel:#1c2026;--sunk:#23282f;--line:#333a44;
-      --ink:#e8ecf1;--dim:#9aa5b1;--accent:#ffd24a;--good:#5fd38d}
-@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
-      --ground:#f6f5f1;--panel:#fff;--sunk:#efeee9;--line:#dcdad3;
-      --ink:#1a1c20;--dim:#5b6470;--accent:#9a6b00;--good:#1f7a45}}
+:root{
+  --fau-blue:#003366; --fau-red:#cc0000; --blue-tint:#e8eef5;
+  --ink:#1b2430; --dim:#556170; --line:#d9dee5; --paper:#ffffff; --wash:#f6f8fa;
+  --serif:"Source Serif 4",Georgia,serif; --sans:"Source Sans 3",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--ground);color:var(--ink);
-     font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-.wrap{max-width:980px;margin:0 auto;padding:28px 16px 80px}
-.brand{display:flex;align-items:center;gap:14px;padding-bottom:18px;border-bottom:1px solid var(--line)}
-.brand .fau{background:#fff;border-radius:8px;padding:7px 10px;line-height:0;flex:none}
-.brand img{height:44px;width:auto}
-.brand p{margin:0;font-size:13px;color:var(--dim);line-height:1.45}
-.brand b{color:var(--ink);font-weight:600}
-h1{font-size:clamp(28px,5vw,40px);line-height:1.15;margin:34px 0 8px}
-h1 span{color:var(--accent)}
-.lede{color:var(--dim);max-width:62ch;margin:0 0 26px}
-nav{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px}
-nav a{padding:6px 12px;border:1px solid var(--line);border-radius:99px;font-size:14px;
-      color:var(--ink);text-decoration:none}
-nav a:hover{border-color:var(--accent)}
-section{margin-top:54px}
-h2{font-size:24px;margin:0 0 4px}
-h2 small{display:block;font-size:13px;font-weight:500;color:var(--accent);
-         letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
-h3{font-size:17px;margin:0 0 6px}
-.sub{color:var(--dim);margin:0 0 18px;max-width:66ch}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
-.card p{margin:0 0 10px;color:var(--dim);font-size:15px}
-.card p:last-child{margin-bottom:0}
-.tag{display:inline-block;font-size:12px;padding:2px 9px;border-radius:99px;margin-bottom:10px;
-     border:1px solid var(--line);color:var(--dim)}
-.tag.live{border-color:var(--good);color:var(--good)}
-.tag.req{border-color:var(--accent);color:var(--accent)}
-.btn{display:inline-block;padding:10px 16px;border-radius:8px;background:var(--accent);
-     color:#14161a;font-weight:600;text-decoration:none;margin-top:4px}
-a{color:var(--accent)}
-figure{margin:0}
-figure img,figure video{width:100%;height:auto;display:block;border-radius:10px;
-     border:1px solid var(--line);background:#000}
-figcaption{font-size:13px;color:var(--dim);margin-top:6px}
-.shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-top:16px}
-.shots img{background:#fff}
-code{font:13px ui-monospace,Menlo,monospace;background:var(--sunk);padding:1px 5px;border-radius:4px}
-.callout{border:1px solid var(--accent);border-radius:12px;padding:18px;background:var(--panel)}
-.callout h3{color:var(--accent)}
-ul{margin:6px 0 0;padding-left:20px;color:var(--dim)}
-li{margin:4px 0}
-footer{margin-top:64px;padding-top:18px;border-top:1px solid var(--line);font-size:13px;color:var(--dim)}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font:17px/1.6 var(--sans)}
+a{color:var(--fau-blue)}
+img{max-width:100%}
+.wrap{max-width:1120px;margin:0 auto;padding:0 16px}
+
+.uni{background:var(--fau-blue);color:#fff;font-size:14px}
+.uni .wrap{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-top:8px;padding-bottom:8px}
+.uni a{color:#fff;text-decoration:none}
+.uni span{opacity:.85}
+header.site{border-bottom:4px solid var(--fau-red);background:#fff}
+header.site .wrap{display:flex;align-items:center;gap:18px;padding-top:18px;padding-bottom:18px;flex-wrap:wrap}
+header.site img{height:56px;width:auto}
+.college{border-left:1px solid var(--line);padding-left:18px;line-height:1.25}
+.college b{display:block;font:700 19px/1.2 var(--serif);color:var(--fau-blue)}
+.college small{color:var(--dim);font-size:14px}
+nav.top{margin-left:auto;display:flex;gap:18px;flex-wrap:wrap;font-weight:600;font-size:15px}
+nav.top a{text-decoration:none;color:var(--ink)}
+nav.top a:hover{color:var(--fau-blue);text-decoration:underline}
+
+.hero{background:var(--wash);border-bottom:1px solid var(--line)}
+.hero .wrap{padding-top:52px;padding-bottom:48px}
+.eyebrow{font-size:13px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--fau-red);margin:0 0 10px}
+h1{font:700 clamp(32px,5vw,50px)/1.1 var(--serif);color:var(--fau-blue);margin:0 0 14px;letter-spacing:-.01em}
+.hero p.lede{font-size:19px;color:var(--dim);max-width:64ch;margin:0 0 26px}
+.index{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.index a{display:block;background:#fff;border:1px solid var(--line);border-top:3px solid var(--fau-blue);
+  border-radius:6px;padding:12px 14px;text-decoration:none;color:var(--ink)}
+.index a:hover{border-top-color:var(--fau-red)}
+.index b{display:block;font-size:15px}
+.index span{font-size:13px;color:var(--dim)}
+
+section.project{padding:64px 0;border-bottom:1px solid var(--line)}
+section.project.alt{background:var(--wash)}
+.phead{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+.num{font:700 14px/1 var(--sans);color:#fff;background:var(--fau-blue);border-radius:4px;padding:6px 8px}
+h2{font:700 clamp(26px,3.4vw,34px)/1.2 var(--serif);color:var(--fau-blue);margin:0}
+.date{color:var(--dim);font-size:15px}
+.question{font:600 19px/1.45 var(--serif);color:var(--ink);margin:6px 0 22px;max-width:70ch}
+.grid2{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:34px;align-items:start}
+@media(max-width:860px){.grid2{grid-template-columns:1fr} nav.top{margin-left:0}}
+.demo{margin:0;background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.demo img{display:block;width:100%;height:auto;max-height:560px;object-fit:contain;background:var(--wash)}
+.demo figcaption{padding:10px 14px;font-size:14px;color:var(--dim);border-top:1px solid var(--line)}
+.demo figcaption b{color:var(--fau-red);text-transform:uppercase;letter-spacing:.08em;font-size:12px;margin-right:6px}
+dl.labels{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;margin:0 0 18px;font-size:15px}
+dl.labels dt{font-weight:700;color:var(--fau-blue);text-transform:uppercase;font-size:12px;letter-spacing:.08em;padding-top:3px}
+dl.labels dd{margin:0}
+.chip{display:inline-block;font-size:13px;padding:1px 9px;border-radius:99px;background:var(--blue-tint);color:var(--fau-blue);margin:0 4px 4px 0;font-weight:600}
+.chip.live{background:#e3f4ea;color:#14663a}
+.chip.req{background:#fdecec;color:#a30000}
+.finding{border-left:4px solid var(--fau-red);background:#fff;padding:12px 16px;margin:0 0 18px;font-size:16px}
+.finding b{color:var(--fau-red);display:block;font-size:12px;letter-spacing:.1em;text-transform:uppercase}
+.actions{display:flex;gap:10px;flex-wrap:wrap}
+.btn{display:inline-block;padding:10px 16px;border-radius:5px;font-weight:700;font-size:15px;text-decoration:none;
+  background:var(--fau-blue);color:#fff;border:2px solid var(--fau-blue)}
+.btn.ghost{background:#fff;color:var(--fau-blue)}
+.btn:hover{background:var(--fau-red);border-color:var(--fau-red);color:#fff}
+details{margin-top:26px}
+summary{cursor:pointer;font-weight:700;color:var(--fau-blue)}
+.gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-top:14px}
+.gallery figure{margin:0;background:#fff;border:1px solid var(--line);border-radius:6px;padding:8px}
+.gallery img{display:block;width:100%;height:auto}
+.gallery figcaption{font-size:13px;color:var(--dim);margin-top:4px}
+
+.band{padding:64px 0;background:var(--fau-blue);color:#fff}
+.band h2{color:#fff}
+.band p{color:#dbe4ee;max-width:70ch}
+.band a.btn{background:#fff;color:var(--fau-blue);border-color:#fff}
+.band a.btn:hover{background:var(--fau-red);border-color:var(--fau-red);color:#fff}
+.costs{padding:64px 0}
+.costs .intro{color:var(--dim);max-width:70ch}
+.cgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin-top:22px}
+.cgrid div{border:1px solid var(--line);border-top:3px solid var(--fau-red);border-radius:6px;padding:18px}
+.cgrid h3{margin:0 0 6px;font:700 18px/1.3 var(--serif);color:var(--fau-blue)}
+.cgrid p{margin:0;color:var(--dim);font-size:15px}
+footer{background:#0b1f33;color:#c7d2de;font-size:14px}
+footer .wrap{padding-top:28px;padding-bottom:28px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+footer a{color:#fff}
 </style>
+</head>
 <body>
-<div class="wrap">
-  <div class="brand">
-    <a href="https://www.fau.edu" class="fau"><img src="trace/fau-logo.svg" alt="Florida Atlantic University"></a>
-    <p>Built for <b>PCB 4054C</b>, Drosophila Genes &amp; Behavior<br>Florida Atlantic University · made by <b>Anik Sahai</b></p>
-  </div>
 
-  <h1>Fly lab <span>tools</span></h1>
-  <p class="lede">Tools for turning <i>Drosophila</i> assays into numbers: how far a larva
-    crawls, how high flies climb, how many get stuck on fly paper, and a small treadmill
-    to watch a single fly walk.</p>
-  <nav>
-    <a href="#larva">Larval foraging</a>
-    <a href="#fly">Adult fly assays</a>
-    <a href="#treadmill">Fly treadmill</a>
-    <a href="#ai">AI analysis</a>
-    <a href="#cost">What it costs</a>
+<div class="uni"><div class="wrap">
+  <a href="https://www.fau.edu">Florida Atlantic University</a>
+  <span>Harriet L. Wilkes Honors College · Jupiter, Florida</span>
+</div></div>
+
+<header class="site"><div class="wrap">
+  <a href="https://www.fau.edu"><img src="trace/fau-logo.svg" alt="Florida Atlantic University"></a>
+  <div class="college"><b>Harriet L. Wilkes Honors College</b><small>PCB 4054C · Drosophila Genes &amp; Behavior</small></div>
+  <nav class="top" aria-label="Sections">
+    <a href="#projects">Projects</a><a href="#analysis">Analysis</a><a href="#costs">Costs</a>
   </nav>
+</div></header>
 
-  <section id="larva">
-    <h2><small>Assay 1</small>Larval foraging (rover / sitter)</h2>
-    <p class="sub">The <i>foraging</i> gene assay: rovers cover more ground than sitters, so
-      the result you need from each plate is the path length in millimetres.</p>
-    <div class="grid">
-      <div class="card">
-        <span class="tag live">Use it now</span>
-        <h3>Trace by hand</h3>
-        <p>Open a plate video, give the dish diameter, and follow each larva with the
-          mouse while the clip plays fast. It handles several larvae per plate, larvae on
-          yeast, and clips with debris. It runs entirely in your browser and the video is
-          never uploaded.</p>
-        <a class="btn" href="trace/">Open the tracer →</a>
+<div class="hero"><div class="wrap">
+  <p class="eyebrow">Student research portfolio · Fall 2026</p>
+  <h1>How genes shape fly behavior</h1>
+  <p class="lede">Six experiments on <i>Drosophila melanogaster</i>, from how far a larva crawls
+    to how a fly sleeps on caffeine. Each project comes with the software built to measure it.</p>
+  <div class="index" id="projects">
+    <a href="#larva"><b>1 · Larval foraging</b><span>Rover vs sitter path length</span></a>
+    <a href="#dam"><b>2 · Caffeine &amp; sleep</b><span>DAM activity monitor</span></a>
+    <a href="#cafe"><b>3 · Sucrose feeding</b><span>CAFE assay</span></a>
+    <a href="#geotaxis"><b>4 · Negative geotaxis</b><span>Climbing assay</span></a>
+    <a href="#flight"><b>5 · Flight</b><span>Fly paper assay</span></a>
+    <a href="#cold"><b>6 · Cold shock</b><span>Paralysis &amp; recovery</span></a>
+  </div>
+</div></div>
+
+<section class="project" id="larva"><div class="wrap">
+  <div class="phead"><span class="num">01</span><h2>Larval foraging</h2><span class="date">September 2026</span></div>
+  <p class="question">Do rover larvae crawl farther than sitter larvae, and does the amount of food change it?</p>
+  <div class="grid2">
+    <figure class="demo">
+      <img src="demo.gif" alt="Replay of a larva's path being drawn in as it crawls, with clock and running distance" loading="lazy">
+      <figcaption><b>Demo</b>The tracker's replay of plate 3: the path is drawn in as it was walked. 72.1 mm in 5 minutes.</figcaption>
+    </figure>
+    <div>
+      <dl class="labels">
+        <dt>Organism</dt><dd>3rd-instar larvae</dd>
+        <dt>Genotypes</dt><dd><span class="chip">for-R rover</span><span class="chip">for-S sitter</span></dd>
+        <dt>Conditions</dt><dd>Agar only · uniform yeast · two yeast spots</dd>
+        <dt>Measure</dt><dd>Path length in 5 min (mm)</dd>
+        <dt>Tools</dt><dd><span class="chip live">Hand tracer: live</span><span class="chip req">Automatic tracker: by request</span></dd>
+      </dl>
+      <div class="finding"><b>Finding</b>Rovers travelled farther than sitters in every condition, and both
+        travelled least on uniform yeast, where food was most plentiful.</div>
+      <div class="actions">
+        <a class="btn" href="trace/">Open the hand tracer</a>
+        <a class="btn ghost" href="reports/larval_foraging.pdf">Read the report (PDF)</a>
       </div>
-      <div class="card">
-        <span class="tag req">By request</span>
-        <h3>Automatic tracking</h3>
-        <p>A computer-vision tracker finds the larva, follows it, and returns the path
-          length and a replay of the path being walked. On plain agar it was within 0.6% of a
-          known path. It runs on a lab machine, not in the browser.</p>
-        <p><a href="#ai">Analysis by AI available by request.</a></p>
-      </div>
     </div>
-    <div class="shots" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
-      <figure><img src="demo.gif" alt="A larva's path drawn in as it is walked" loading="lazy">
-        <figcaption>Plate 3, left: 72.1 mm. The path is drawn in as the larva walked it.</figcaption></figure>
-      <figure><img src="fig1_single_larva_paths.jpg" alt="Reconstructed paths for three single-larva plates" loading="lazy">
-        <figcaption>Reconstructed paths for single-larva plates. Scale bars are 10 mm.</figcaption></figure>
+  </div>
+  <details><summary>Figures</summary>
+    <div class="gallery">
+      <figure><img src="img/larval_pathlength.jpg" alt="Bar chart of mean path length by variant and substrate" loading="lazy"><figcaption>Mean path length by variant and substrate.</figcaption></figure>
+      <figure><img src="fig1_single_larva_paths.jpg" alt="Three plates with reconstructed larval paths" loading="lazy"><figcaption>Reconstructed paths, single-larva plates. Scale bars 10 mm.</figcaption></figure>
+      <figure><img src="fig3_motion_heatmap.jpg" alt="Motion samples accumulated over the recording, coloured by time" loading="lazy"><figcaption>Raw motion evidence under the reconstruction, coloured by time.</figcaption></figure>
     </div>
-  </section>
+  </details>
+</div></section>
 
-  <section id="fly">
-    <h2><small>Assays 2–4</small>Adult fly assays</h2>
-    <p class="sub">Climbing (negative geotaxis), flight (fly paper) and cold shock. Software
-      counts the flies first, then a person checks every count in the browser before any
-      number is used.</p>
-    <div class="grid">
-      <div class="card"><span class="tag req">By request</span><h3>Climbing counter</h3>
-        <p>Finds the flies in each vial at 1–5 s after the tap and splits each vial into
-          quadrants. A review page lets you click to add a fly it missed or remove one it got
-          wrong.</p></div>
-      <div class="card"><span class="tag req">By request</span><h3>Fly paper counter</h3>
-        <p>Counts the real flies stuck in each zone between the red lines. It ignores the
-          flies printed on the paper.</p></div>
-      <div class="card"><span class="tag req">By request</span><h3>Spreadsheet &amp; graphs</h3>
-        <p>Turns the reviewed counts into a normalized spreadsheet and the graphs the lab
-          handouts ask for, with error bars, statistical tests and figure legends.</p></div>
+<section class="project alt" id="dam"><div class="wrap">
+  <div class="phead"><span class="num">02</span><h2>Caffeine &amp; sleep</h2><span class="date">October 2026</span></div>
+  <p class="question">Does caffeine change how much flies move and sleep, and do males and females respond differently?</p>
+  <div class="grid2">
+    <figure class="demo">
+      <img src="img/dam_demo.jpg" alt="Fly tubes with food plugs and colored bands, prepared for the activity monitor" loading="lazy">
+      <figcaption><b>Demo</b>Single-fly tubes, colour-banded by treatment, ready for the infrared activity monitor.</figcaption>
+    </figure>
+    <div>
+      <dl class="labels">
+        <dt>Organism</dt><dd>Adult flies, males and females</dd>
+        <dt>Groups</dt><dd><span class="chip">Control food</span><span class="chip">Caffeine food</span></dd>
+        <dt>Method</dt><dd>TriKinetics DAM, 1-min beam-break bins, 7 days</dd>
+        <dt>Measure</dt><dd>Activity; sleep = 5+ min without movement</dd>
+        <dt>Tools</dt><dd><span class="chip req">Sleep analysis: by request</span></dd>
+      </dl>
+      <div class="finding"><b>Finding</b>Caffeine broke sleep into more, shorter bouts in both sexes, and
+        total sleep fell only slightly. Females became more active, males less so.</div>
+      <div class="actions"><a class="btn" href="reports/dam_caffeine.pdf">Read the report (PDF)</a></div>
     </div>
-  </section>
-
-  <section id="treadmill">
-    <h2><small>Hardware</small>Fly treadmill</h2>
-    <p class="sub">A miniature belt treadmill that keeps a single fly walking in place, adapted
-      from Pratt et al. (2024, <i>Current Biology</i>). It is 3D-printed, driven by a
-      28BYJ-48 stepper motor, and uses a 6 mm GT2 belt.</p>
-    <div class="shots">
-      <figure><img src="img/mini_spin.gif" alt="The mini treadmill rotating" loading="lazy"><figcaption>Mini treadmill</figcaption></figure>
-      <figure><img src="img/assembled.png" alt="Treadmill parts assembled" loading="lazy"><figcaption>Every part in position</figcaption></figure>
-      <figure><img src="img/PLATE_LAYOUT.png" alt="All parts laid out on one print bed" loading="lazy"><figcaption>All parts on one print bed</figcaption></figure>
+  </div>
+  <details><summary>Figures</summary>
+    <div class="gallery">
+      <figure><img src="img/dam_sleep_by_hour.jpg" alt="Sleep minutes per hour across the day for each group" loading="lazy"><figcaption>Sleep per hour across the day; grey = lights off.</figcaption></figure>
+      <figure><img src="img/dam_sleep_summary.jpg" alt="Total sleep, bout count and bout length by group" loading="lazy"><figcaption>Total sleep, number of bouts and bout length.</figcaption></figure>
     </div>
-    <p class="sub" style="margin-top:16px">Printable files and build notes:
-      <a href="https://github.com/AnikS22/larvatrack/tree/main/treadmill">treadmill/ on GitHub</a>.</p>
-  </section>
+  </details>
+</div></section>
 
-  <section id="ai">
-    <div class="callout">
-      <h3>Analysis by AI available by request</h3>
-      <p style="margin:0;color:var(--dim)">Automatic larva tracking, fly counting and graphing
-        run on request, not as a public service. Email
-        <a href="mailto:asahai2024@fau.edu?subject=Fly%20lab%20analysis%20request">asahai2024@fau.edu</a>
-        with what you have (videos, photos) and what you need.</p>
+<section class="project" id="cafe"><div class="wrap">
+  <div class="phead"><span class="num">03</span><h2>Sucrose feeding (CAFE)</h2><span class="date">October 2026</span></div>
+  <p class="question">Do rover and sitter flies prefer sucrose over water, and does one genotype eat more?</p>
+  <div class="grid2">
+    <figure class="demo">
+      <img src="img/cafe_demo.jpg" alt="Capillary tubes on a sheet, each marked with its start level and 24-hour food level" loading="lazy">
+      <figcaption><b>Demo</b>Measuring intake: each capillary's start mark (black) and 24 h food level (yellow), read off one photo.</figcaption>
+    </figure>
+    <div>
+      <dl class="labels">
+        <dt>Organism</dt><dd>Adult males, 10 per vial</dd>
+        <dt>Genotypes</dt><dd><span class="chip">for-R rover</span><span class="chip">for-S sitter</span></dd>
+        <dt>Foods</dt><dd>15% sucrose vs water, each dyed red and blue</dd>
+        <dt>Measure</dt><dd>Volume drunk per tube in 24 h (µL)</dd>
+        <dt>Tools</dt><dd><span class="chip req">Photo measurement: by request</span></dd>
+      </dl>
+      <div class="finding"><b>Finding</b>Both genotypes drank more sucrose than water, but rovers and
+        sitters drank about the same amount.</div>
+      <div class="actions"><a class="btn" href="reports/cafe_sucrose.pdf">Read the report (PDF)</a></div>
     </div>
-  </section>
-
-  <section id="cost">
-    <h2><small>Behind the scenes</small>What it costs to run all of this</h2>
-    <p class="sub">None of this is free. Each part has a real cost:</p>
-    <div class="grid">
-      <div class="card"><h3>AI time</h3>
-        <p>The tools were built and are kept working with paid AI models, and each request for
-          AI analysis uses more of that paid time.</p></div>
-      <div class="card"><h3>Computing</h3>
-        <p>Automatic tracking takes minutes of processor time per clip. It runs on a personal
-          machine that has to be switched on, and connecting it to the web uses a tunnel
-          service.</p></div>
-      <div class="card"><h3>Hosting &amp; storage</h3>
-        <p>Assay videos are large. Storing them, plus the web front ends and deployments,
-          adds up.</p></div>
-      <div class="card"><h3>Hardware</h3>
-        <p>The treadmill needs printer filament, a stepper motor, bearings, a GT2 belt and a
-          shaft, plus the test prints it takes to get the fit right.</p></div>
+  </div>
+  <details><summary>Figures</summary>
+    <div class="gallery">
+      <figure><img src="img/cafe_consumption.jpg" alt="Bar chart of mean food consumption by genotype and food" loading="lazy"><figcaption>Mean volume drunk by genotype and food.</figcaption></figure>
+      <figure><img src="img/cafe_prep.jpg" alt="Preparing dyed sucrose and labelled vials" loading="lazy"><figcaption>Preparation: dyed foods and labelled vials.</figcaption></figure>
     </div>
-    <p class="sub" style="margin-top:16px">That is why automatic analysis is by request. If your
-      lab uses these tools regularly, help covering the costs is what keeps them running.</p>
-  </section>
+  </details>
+</div></section>
 
-  <footer>
-    A resource of Florida Atlantic University, made by Anik Sahai for PCB 4054C.
-    Source: <a href="https://github.com/AnikS22/larvatrack">github.com/AnikS22/larvatrack</a>
-  </footer>
-</div>
+<section class="project alt" id="geotaxis"><div class="wrap">
+  <div class="phead"><span class="num">04</span><h2>Negative geotaxis (climbing)</h2><span class="date">October 2026</span></div>
+  <p class="question">After a tap knocks them to the bottom, how fast do mutant flies climb compared to wild type?</p>
+  <div class="grid2">
+    <figure class="demo">
+      <img src="img/climbing_demo.gif" alt="Two vials over 0 to 5 seconds, each fly circled, vials split into quadrants" loading="lazy">
+      <figcaption><b>Demo</b>The climbing counter at 0–5 s after the tap: every fly circled, each vial split into four quadrants.</figcaption>
+    </figure>
+    <div>
+      <dl class="labels">
+        <dt>Organism</dt><dd>Adult flies, males and females separately</dd>
+        <dt>Genotypes</dt><dd><span class="chip">Hey</span><span class="chip">f</span><span class="chip">M1</span><span class="chip">CS (wild type)</span><span class="chip">w1118 (control)</span></dd>
+        <dt>Measure</dt><dd>% of flies in each quadrant at 1–5 s</dd>
+        <dt>Statistics</dt><dd>Welch t-tests, mutant vs each control</dd>
+        <dt>Tools</dt><dd><span class="chip req">Climbing counter + review page: by request</span></dd>
+      </dl>
+      <div class="finding"><b>How counting works</b>The software finds every fly at each second, then a person
+        checks every vial on a review page, clicking to add a missed fly or remove a wrong one.</div>
+    </div>
+  </div>
+  <details><summary>Figures 1–5</summary>
+    <div class="gallery">
+      <figure><img src="img/climbing_1s.jpg" alt="Climbing at 1 second" loading="lazy"><figcaption>Figure 1. Climbing at 1 s.</figcaption></figure>
+      <figure><img src="img/climbing_2s.jpg" alt="Climbing at 2 seconds" loading="lazy"><figcaption>Figure 2. Climbing at 2 s.</figcaption></figure>
+      <figure><img src="img/climbing_3s.jpg" alt="Climbing at 3 seconds" loading="lazy"><figcaption>Figure 3. Climbing at 3 s.</figcaption></figure>
+      <figure><img src="img/climbing_4s.jpg" alt="Climbing at 4 seconds" loading="lazy"><figcaption>Figure 4. Climbing at 4 s.</figcaption></figure>
+      <figure><img src="img/climbing_5s.jpg" alt="Climbing at 5 seconds" loading="lazy"><figcaption>Figure 5. Climbing at 5 s.</figcaption></figure>
+    </div>
+  </details>
+</div></section>
+
+<section class="project" id="flight"><div class="wrap">
+  <div class="phead"><span class="num">05</span><h2>Flight (fly paper)</h2><span class="date">October 2026</span></div>
+  <p class="question">Dropped down a tube, where do flies land? Strong fliers catch the paper high; weak ones fall to the water.</p>
+  <div class="grid2">
+    <figure class="demo">
+      <img src="img/flypaper_demo.jpg" alt="Fly paper sheet with each stuck fly circled and numbered by zone" loading="lazy">
+      <figcaption><b>Demo</b>The fly paper counter: each real fly circled and numbered by zone. The printed flies on the paper are ignored.</figcaption>
+    </figure>
+    <div>
+      <dl class="labels">
+        <dt>Organism</dt><dd>Adult flies</dd>
+        <dt>Genotypes</dt><dd><span class="chip">Hey</span><span class="chip">f</span><span class="chip">M1</span><span class="chip">CS</span><span class="chip">w1118</span></dd>
+        <dt>Measure</dt><dd>% of flies per zone, water (1) to top (4)</dd>
+        <dt>Statistics</dt><dd>Chi-square</dd>
+        <dt>Tools</dt><dd><span class="chip req">Fly paper counter: by request</span></dd>
+      </dl>
+      <div class="finding"><b>Data note</b>Two sheets per genotype (Oct 22 and Oct 29). Low counts on some
+        sheets widen the error bars.</div>
+    </div>
+  </div>
+  <details><summary>Figure 6</summary>
+    <div class="gallery">
+      <figure><img src="img/flight.jpg" alt="Stacked bars of fly landing zones by genotype" loading="lazy"><figcaption>Figure 6. Flight assay, landing zone by genotype.</figcaption></figure>
+    </div>
+  </details>
+</div></section>
+
+<section class="project alt" id="cold"><div class="wrap">
+  <div class="phead"><span class="num">06</span><h2>Cold shock</h2><span class="date">October 2026</span></div>
+  <p class="question">On ice, how quickly do flies stop moving, and how long do they take to wake back up?</p>
+  <div class="grid2">
+    <figure class="demo">
+      <img src="img/cold_recovery50.jpg" alt="Bar chart of time to 50 percent recovery by genotype" loading="lazy">
+      <figcaption><b>Demo</b>Time for half the flies in a tube to recover, read frame by frame from video.</figcaption>
+    </figure>
+    <div>
+      <dl class="labels">
+        <dt>Organism</dt><dd>Adult flies</dd>
+        <dt>Genotypes</dt><dd><span class="chip">Hey</span><span class="chip">f</span><span class="chip">M1</span><span class="chip">CS</span><span class="chip">w1118</span></dd>
+        <dt>Measure</dt><dd>Time to 50% / 100% paralysis (s) and recovery (min)</dd>
+        <dt>Precision</dt><dd>About ±2 s paralysis, ±30 s recovery</dd>
+        <dt>Tools</dt><dd><span class="chip req">Video timing: by request</span></dd>
+      </dl>
+      <div class="finding"><b>Data note</b>One or two tubes per bar, so no p-values. Hatched bars are tubes
+        still not recovered when filming stopped; those values are minimums.</div>
+    </div>
+  </div>
+  <details><summary>Figures 7–10</summary>
+    <div class="gallery">
+      <figure><img src="img/cold_paralysis50.jpg" alt="Time to 50 percent paralysis" loading="lazy"><figcaption>Figure 7. Time to 50% paralysis.</figcaption></figure>
+      <figure><img src="img/cold_paralysis100.jpg" alt="Time to 100 percent paralysis" loading="lazy"><figcaption>Figure 8. Time to 100% paralysis.</figcaption></figure>
+      <figure><img src="img/cold_recovery50.jpg" alt="Time to 50 percent recovery" loading="lazy"><figcaption>Figure 9. Time to 50% recovery.</figcaption></figure>
+      <figure><img src="img/cold_recovery100.jpg" alt="Time to 100 percent recovery" loading="lazy"><figcaption>Figure 10. Time to 100% recovery.</figcaption></figure>
+    </div>
+  </details>
+</div></section>
+
+<div class="band" id="analysis"><div class="wrap">
+  <p class="eyebrow" style="color:#ffb3b3">Service</p>
+  <h2>Analysis by AI available by request</h2>
+  <p>Automatic larva tracking, fly counting, sleep analysis and graphing run on request
+    rather than as a public service. Send what you have (videos, photos, monitor files) and
+    what you need measured.</p>
+  <a class="btn" href="mailto:asahai2024@fau.edu?subject=Drosophila%20analysis%20request">Request analysis</a>
+</div></div>
+
+<section class="costs" id="costs"><div class="wrap">
+  <p class="eyebrow">Behind the scenes</p>
+  <h2>What it costs to run all of this</h2>
+  <p class="intro">None of this is free. Every part has a real cost:</p>
+  <div class="cgrid">
+    <div><h3>AI time</h3><p>The tools were built, and are kept working, with paid AI models. Every analysis request uses more of that paid time.</p></div>
+    <div><h3>Computing</h3><p>Automatic tracking takes minutes of processor time per clip. It runs on a personal machine that has to stay on, reached through a tunnel service.</p></div>
+    <div><h3>Hosting &amp; storage</h3><p>Assay videos are large. Storing them, plus deploying and serving the web tools, adds up.</p></div>
+    <div><h3>Upkeep</h3><p>Fixing tools when a clip breaks them, checking counts by hand, and keeping the figures current all take hours.</p></div>
+  </div>
+  <p class="intro" style="margin-top:20px">That is why automatic analysis is by request. If your lab uses these tools regularly, help covering the costs keeps them running.</p>
+</div></section>
+
+<footer><div class="wrap">
+  <span>Anik Sahai · Harriet L. Wilkes Honors College, Florida Atlantic University · PCB 4054C, Fall 2026. Independent student project.</span>
+  <span><a href="https://github.com/AnikS22/larvatrack">Source code</a></span>
+</div></footer>
 </body>
 </html>
