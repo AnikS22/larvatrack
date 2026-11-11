@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FlyBench · Feeding (CAFE)</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>Feeding (CAFE assay)</h1>
+  <p class="sub">Measures how much flies drank from each capillary, from one photo of the tubes next to a ruler.
+    Length of liquid gone × volume per millimetre = microlitres eaten.</p>
+  <div class="how"><b>How it works</b><ol>
+    <li>Upload a photo of the capillaries lying next to a ruler.</li>
+    <li><b>Scale:</b> click two marks on the ruler and type the distance between them.</li>
+    <li><b>Tubes:</b> for each capillary, click its start mark, then the food level after feeding. Give it a group and food.</li>
+    <li>Wrong click? Press <b>Undo</b>, or delete the tube in the table and measure it again.</li></ol></div>
+
+  <div class="cols">
+    <div>
+      <div class="card"><div class="stage"><canvas id="cv" width="900" height="500"></canvas></div>
+        <p class="note" id="hint">Upload a photo to begin.</p></div>
+      <div class="card"><h2>Tubes</h2><div class="scroll" id="table"></div></div>
+      <div class="card"><h2>Intake by group</h2><div class="chart" id="chart"></div><div class="scroll" id="summary"></div></div>
+    </div>
+    <div>
+      <div class="card"><p class="step">1 · Photo</p>
+        <label>Photo of the tubes <input type="file" id="file" accept="image/*"></label></div>
+      <div class="card"><p class="step">2 · Scale</p>
+        <label>Distance between your two ruler clicks (mm) <input type="number" id="rulerMM" value="10" min="0.1" step="0.1"></label>
+        <button class="ghost" id="setScale">Click two ruler marks</button>
+        <p class="note" id="scaleInfo">Scale not set.</p>
+        <label style="margin-top:12px">Capillary volume (µL) <input type="number" id="capUL" value="5" step="0.1"></label>
+        <label>Capillary length for that volume (mm) <input type="number" id="capMM" value="127" step="0.1"></label>
+        <label>Flies per vial (for intake per fly) <input type="number" id="flies" value="10" min="1"></label>
+        <p class="note">Check these against your capillaries' packaging: they set µL per mm.</p></div>
+      <div class="card"><p class="step">3 · Measure a tube</p>
+        <label>Group (genotype, sex…) <input type="text" id="group" value="Rover"></label>
+        <label>Food <input type="text" id="food" value="15% sucrose"></label>
+        <div class="row"><button id="measure">Measure next tube</button><button class="ghost" id="undo">Undo</button></div>
+        <p class="note">Click the start mark, then the food level.</p></div>
+      <div class="card"><p class="step">4 · Export</p><button id="csv">Download CSV</button></div>
+    </div>
+  </div>
+</div>
+<script src="../suite.js"></script>
+<script>
+chrome();
+const cv = $("#cv"), ctx = cv.getContext("2d");
+let img = null, mode = null, clicks = [], scale = null, tubes = [];
+const pxPerMM = () => scale ? Math.hypot(scale[1][0] - scale[0][0], scale[1][1] - scale[0][1]) / (+$("#rulerMM").value || 1) : NaN;
+const ulPerMM = () => (+$("#capUL").value || 0) / (+$("#capMM").value || 1);
+const perVial = () => Math.max(1, +$("#flies").value || 1);
+const volume = t => Math.hypot(t.b[0] - t.a[0], t.b[1] - t.a[1]) / pxPerMM() * ulPerMM();
+
+function draw() {
+  if (!img) return;
+  ctx.drawImage(img, 0, 0); const r = Math.max(4, cv.width / 300);
+  ctx.lineWidth = r * 0.8; ctx.font = `${r * 4}px sans-serif`;
+  if (scale) { ctx.strokeStyle = "#e3a33b"; ctx.beginPath(); ctx.moveTo(...scale[0]); ctx.lineTo(...scale[1]); ctx.stroke(); }
+  tubes.forEach((t, i) => { ctx.strokeStyle = "#cc0000"; ctx.beginPath(); ctx.moveTo(...t.a); ctx.lineTo(...t.b); ctx.stroke();
+    ctx.fillStyle = "#cc0000"; ctx.fillText(i + 1, t.b[0] + r * 2, t.b[1]); });
+  ctx.fillStyle = "#003366"; clicks.forEach(p => { ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 7); ctx.fill(); });
+}
+function render() {
+  draw(); const ok = Number.isFinite(pxPerMM());
+  $("#scaleInfo").textContent = ok ? `${pxPerMM().toFixed(2)} px per mm · ${ulPerMM().toFixed(3)} µL per mm` : "Scale not set.";
+  let h = `<table><tr><th>#</th><th>Group</th><th>Food</th><th class="n">Length (mm)</th><th class="n">Volume (µL)</th><th class="n">Per fly (µL)</th><th></th></tr>`;
+  tubes.forEach((t, i) => { const mm = Math.hypot(t.b[0] - t.a[0], t.b[1] - t.a[1]) / pxPerMM();
+    h += `<tr><td>${i + 1}</td><td><input type="text" data-i="${i}" data-k="group" value="${esc(t.group)}"></td><td><input type="text" data-i="${i}" data-k="food" value="${esc(t.food)}"></td>
+      <td class="n">${fmt(mm)}</td><td class="n">${fmt(volume(t), 3)}</td><td class="n">${fmt(volume(t) / perVial(), 4)}</td><td><button class="ghost" data-del="${i}">Delete</button></td></tr>`; });
+  $("#table").innerHTML = tubes.length ? h + "</table>" : '<p class="note">No tubes measured yet.</p>';
+  const rows = tubes.map(t => ({ g: `${t.group} · ${t.food}`, v: volume(t) }));
+  const gs = byGroup(rows, "g", "v");
+  if (gs.length && ok) { barChart($("#chart"), gs, { ylabel: "Volume drunk per tube (µL)", title: "Mean intake by group and food" }); summaryTable($("#summary"), gs, "µL"); }
+}
+$("#file").onchange = async e => { img = await loadImageFile(e.target.files[0]); cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+  scale = null; tubes = []; clicks = []; mode = "scale"; $("#hint").textContent = "Click the first ruler mark."; render(); };
+$("#setScale").onclick = () => { mode = "scale"; clicks = []; $("#hint").textContent = "Click the first ruler mark."; draw(); };
+$("#measure").onclick = () => { if (!scale) { $("#hint").innerHTML = '<span class="err">Set the scale first.</span>'; return; } mode = "tube"; clicks = []; $("#hint").textContent = "Click the tube's start mark."; draw(); };
+$("#undo").onclick = () => { if (clicks.length) clicks.pop(); else tubes.pop(); render(); };
+cv.onclick = e => {
+  if (!img || !mode) return; clicks.push(canvasPoint(cv, e));
+  if (clicks.length < 2) { $("#hint").textContent = mode === "scale" ? "Now the second ruler mark." : "Now the food level after feeding."; draw(); return; }
+  if (mode === "scale") { scale = clicks; mode = "tube"; $("#hint").textContent = "Scale set. Click a tube's start mark."; }
+  else { tubes.push({ a: clicks[0], b: clicks[1], group: $("#group").value, food: $("#food").value }); $("#hint").textContent = `Tube ${tubes.length} saved. Click the next start mark.`; }
+  clicks = []; render();
+};
+$("#table").oninput = e => { const i = e.target.dataset.i; if (i != null) { tubes[i][e.target.dataset.k] = e.target.value; render(); } };
+$("#table").onclick = e => { const d = e.target.dataset.del; if (d != null) { tubes.splice(+d, 1); render(); } };
+["#rulerMM", "#capUL", "#capMM", "#flies"].forEach(s => $(s).oninput = render);
+$("#csv").onclick = () => downloadCSV("cafe_intake.csv", tubes.map((t, i) => ({ tube: i + 1, group: t.group, food: t.food,
+  length_mm: fmt(Math.hypot(t.b[0] - t.a[0], t.b[1] - t.a[1]) / pxPerMM(), 2), volume_uL: fmt(volume(t), 3), per_fly_uL: fmt(volume(t) / perVial(), 4) })));
+</script>
+</body>
+</html>

@@ -1,16 +1,18 @@
-# Fly lab tools — PCB 4054C
+# FlyBench
+
+A *Drosophila* data analysis tool suite, made by **Anik Sahai** (Harriet L. Wilkes Honors College, Florida Atlantic University).
 
 Tools for measuring *Drosophila* behavior, built for **PCB 4054C, Drosophila Genes &
 Behavior** at Florida Atlantic University.
 
-**Website: https://aniks22.github.io/larvatrack/**: all six PCB 4054C projects (larval foraging, caffeine & sleep, CAFE feeding, negative geotaxis, flight, cold shock) with demos, figures, reports and the in-browser larva tracer.
+**Website: https://aniks22.github.io/larvatrack/**: six in-browser tools (larval foraging, sleep & activity from DAM files, CAFE feeding, climbing, flight, cold shock). Upload, correct by hand, get graphs, statistics and CSV. Automatic tracking and fly detection: AI analysis by request, asahai2024@fau.edu.
 
 | Folder | What it does |
 |---|---|
 | [`larva/`](larva/) | **Larval foraging (rover/sitter).** Path length per larva from a plate video. Automatic tracker (`app.py`, `tptrack.py`) and hand tracer (`web/`). See [larva/README.md](larva/README.md). |
 | [`fly/`](fly/) | **Adult fly assays.** Climbing counter (`geotaxis.py`), fly paper counter (`fly_paper.py`), one review page for both (`review_all.py`), spreadsheet (`fly_sheet.py`) and handout graphs (`fly_figures.py`). |
 | [`treadmill/`](treadmill/) | **Fly treadmill hardware.** OpenSCAD sources, printable STLs, build notes (`fly/MINI_BUILD.md`, `parts/README.md`, `print_kit/README.md`), and a Fusion 360 script (`fusion/FlyTreadmill/`). |
-| [`docs/`](docs/) | The GitHub Pages site and the README figures. |
+| [`docs/`](docs/) | The FlyBench website. `docs/tools/` holds the in-browser tools (`suite.js` = shared stats; run `node docs/tools/suite.js` to self-check), `docs/trace/` the larva hand tracer. |
 
 ## Fly assays, in order
 

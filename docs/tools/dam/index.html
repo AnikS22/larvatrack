@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FlyBench · Sleep &amp; Activity</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>Sleep &amp; Activity (DAM)</h1>
+  <p class="sub">Turns raw TriKinetics Drosophila Activity Monitor files into activity and sleep per fly,
+    then compares groups. Sleep is any run of at least 5 minutes with no beam crossings.</p>
+  <div class="how"><b>How it works</b><ol>
+    <li>Upload one or more <code>MonitorN.txt</code> files from DAMSystem3 (1-minute bins).</li>
+    <li>Say which tubes belong to which group, e.g. <code>Male control: 1-8</code>.</li>
+    <li>Each fly's data stops at its death, so dead flies don't read as asleep. Untick any tube to leave it out. Every number updates.</li>
+    <li>Pick a measure to graph. Download the per-fly table as CSV.</li></ol></div>
+
+  <div class="cols">
+    <div>
+      <div class="card"><h2>Group comparison</h2>
+        <label>Measure <select id="metric"></select></label>
+        <div class="chart" id="chart"><p class="note">Upload a monitor file to begin.</p></div>
+        <div class="scroll" id="summary"></div>
+      </div>
+      <div class="card"><h2>Sleep across the day</h2>
+        <p class="note" style="margin-top:0">Mean minutes of sleep in each clock hour, per group. Grey = lights off (from the monitor's light sensor).</p>
+        <div class="chart" id="profile"></div>
+      </div>
+      <div class="card"><h2>Every tube</h2>
+        <p class="note" style="margin-top:0">Untick a tube to exclude it. Each fly's data stops when it died, so a dead fly is not counted as asleep. Survival (hours alive) is also a measure above.</p>
+        <div class="scroll" id="tubes"></div>
+      </div>
+    </div>
+    <div>
+      <div class="card"><p class="step">1 · Data</p>
+        <label>Monitor files <input type="file" id="files" accept=".txt,.csv" multiple></label>
+        <p class="note" id="fileinfo"></p>
+      </div>
+      <div class="card"><p class="step">2 · Groups</p>
+        <label>One group per line: <i>name: tubes</i>
+          <textarea id="groups">Male control: 1-8
+Male caffeine: 9-16
+Female control: 17-24
+Female caffeine: 25-32</textarea></label>
+        <p class="note">With several files, tubes are numbered file 1 = 1–32, file 2 = 33–64, and so on.</p>
+      </div>
+      <div class="card"><p class="step">3 · Settings</p>
+        <label>Sleep = no movement for at least (min) <input type="number" id="thresh" value="5" min="1"></label>
+        <label>Skip the first (hours, acclimation) <input type="number" id="skip" value="0" min="0" step="0.5"></label>
+        <label><input type="checkbox" id="deathCut" checked style="width:auto"> Stop each fly's data at death</label>
+        <p class="note" style="margin-top:-6px">Death = the end of the last hour with at least 3 beam crossings. Without this, a dead fly reads as asleep.</p>
+        <button id="csv" disabled>Download per-fly CSV</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="../suite.js"></script>
+<script>
+chrome();
+const MON = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+const METRICS = {
+  sleepPerDay: ["Total sleep (min / day)", "min/day"], boutsPerDay: ["Sleep bouts per day", "bouts/day"],
+  boutLen: ["Mean sleep bout length (min)", "min"], countsPerDay: ["Activity (beam crossings / day)", "counts/day"],
+  daySleep: ["Daytime sleep (min / day)", "min/day"], nightSleep: ["Night sleep (min / day)", "min/day"],
+  wakeActivity: ["Activity per waking minute", "counts/min"], hoursAlive: ["Survival (hours alive)", "h"],
+};
+$("#metric").innerHTML = Object.entries(METRICS).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join("");
+let monitors = [], tubes = [], excluded = new Set();
+
+// DAMSystem3 MonitorN.txt: idx, date "17 Sep 26", time, status, ..., col 10 light, cols 11-42 tubes 1-32.
+function parseMonitor(text) {
+  const t = [], light = [], counts = Array.from({length: 32}, () => []);
+  for (const line of text.split(/\r?\n/)) {
+    const c = line.split("\t"); if (c.length < 42 || c[3] !== "1") continue;
+    const [d, m, y] = c[1].trim().split(/\s+/), [hh, mm] = c[2].split(":");
+    if (!(m in MON)) continue;
+    t.push(new Date(2000 + +y, MON[m], +d, +hh, +mm).getTime()); light.push(+c[9]);
+    for (let i = 0; i < 32; i++) counts[i].push(+c[10 + i] || 0);
+  }
+  if (!t.length) throw new Error("No readable rows. Is this a DAMSystem3 MonitorN.txt file (42 tab-separated columns)?");
+  return {t, light, counts};
+}
+
+function analyse() {
+  const thresh = Math.max(1, +$("#thresh").value || 5), skip = (+$("#skip").value || 0) * 60;
+  tubes = [];
+  monitors.forEach((m, mi) => {
+    const start = Math.min(skip, m.t.length);
+    m.counts.forEach((c, i) => {
+      const id = mi * 32 + i + 1, all = c.slice(start);
+      // death: last minute with movement inside the last clock-hour block holding >= 3 crossings
+      let end = all.length, died = false;
+      if ($("#deathCut").checked) {
+        let lastHour = -1;
+        for (let h = 0; h * 60 < all.length; h++) if (all.slice(h * 60, h * 60 + 60).reduce((s, x) => s + x, 0) >= 3) lastHour = h;
+        let k = lastHour < 0 ? 0 : Math.min(all.length, lastHour * 60 + 60); while (k > 0 && all[k - 1] === 0) k--;
+        if (all.length - k > 120) { end = k; died = true; }   // ponytail: <2 h of trailing stillness at the end is treated as sleep, not death
+      }
+      const cs = all.slice(0, end), lt = m.light.slice(start, start + end), ts = m.t.slice(start, start + end);
+      const asleep = new Array(cs.length).fill(false); let bouts = 0, run = 0;
+      for (let k = 0; k <= cs.length; k++) {
+        if (k < cs.length && cs[k] === 0) { run++; continue; }
+        if (run >= thresh) { bouts++; for (let j = k - run; j < k; j++) asleep[j] = true; }
+        run = 0;
+      }
+      const sleep = asleep.filter(Boolean).length, total = cs.reduce((s, x) => s + x, 0), days = Math.max(cs.length, 1) / 1440;
+      const hourly = new Array(24).fill(0), hourN = new Array(24).fill(0);
+      let daySl = 0, nightSl = 0, dayN = 0, nightN = 0;
+      ts.forEach((tt, k) => { const h = new Date(tt).getHours(); hourN[h]++; if (asleep[k]) hourly[h]++;
+        if (lt[k]) { dayN++; if (asleep[k]) daySl++; } else { nightN++; if (asleep[k]) nightSl++; } });
+            tubes.push({ id, monitor: mi + 1, tube: i + 1, minutes: cs.length, totalCounts: total,
+        countsPerDay: total / days, sleepPerDay: sleep / days, boutsPerDay: bouts / days,
+        boutLen: bouts ? sleep / bouts : NaN, daySleep: dayN ? daySl / (dayN / 1440) : NaN,
+        nightSleep: nightN ? nightSl / (nightN / 1440) : NaN, wakeActivity: total / Math.max(1, cs.length - sleep),
+        hourly: hourly.map((s, h) => hourN[h] ? s / (hourN[h] / 60) : NaN), died, hoursAlive: cs.length / 60 });
+    });
+  });
+  const groups = parseGroups($("#groups").value), gOf = {};
+  for (const [g, ids] of Object.entries(groups)) ids.forEach(i => gOf[i] = g);
+  tubes.forEach(t => t.group = gOf[t.id] || "");
+  render();
+}
+
+function render() {
+  if (!tubes.length) return;
+  const use = tubes.filter(t => t.group && !excluded.has(t.id)), key = $("#metric").value, [label, unit] = METRICS[key];
+  const gs = byGroup(use, "group", key);
+  barChart($("#chart"), gs, { ylabel: label, title: label });
+  summaryTable($("#summary"), gs, unit);
+  // hourly profile, one line per group
+  const names = [...new Set(use.map(t => t.group))], W = 720, H = 300, L = 54, B = 40, T = 14, R = 150;
+  const x = h => L + (W - L - R) * h / 23, y = v => T + (H - T - B) * (1 - v / 60);
+  const m0 = monitors[0], darkH = new Array(24).fill(0), allH = new Array(24).fill(0);
+  m0.t.forEach((tt, k) => { const h = new Date(tt).getHours(); allH[h]++; if (!m0.light[k]) darkH[h]++; });
+  let s = `<svg viewBox="0 0 ${W} ${H}" font-family="Source Sans 3, system-ui, sans-serif">`;
+  for (let h = 0; h < 24; h++) if (allH[h] && darkH[h] / allH[h] > 0.5) s += `<rect x="${x(h) - (W - L - R) / 46}" y="${T}" width="${(W - L - R) / 23}" height="${H - T - B}" fill="#eceff3"/>`;
+  for (let v = 0; v <= 60; v += 15) s += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="#e6e9ee"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="12" fill="#556170">${v}</text>`;
+  for (let h = 0; h < 24; h += 3) s += `<text x="${x(h)}" y="${H - B + 18}" text-anchor="middle" font-size="12" fill="#556170">${h}:00</text>`;
+  s += `<text transform="translate(14 ${(H - B) / 2}) rotate(-90)" text-anchor="middle" font-size="12">Sleep (min per hour)</text>`;
+  names.forEach((g, gi) => {
+    const rows = use.filter(t => t.group === g), c = PALETTE[gi % PALETTE.length];
+    const pts = [...Array(24).keys()].map(h => [x(h), y(mean(rows.map(r => r.hourly[h]).filter(Number.isFinite)))]).filter(p => Number.isFinite(p[1]));
+    s += `<polyline fill="none" stroke="${c}" stroke-width="2.5" points="${pts.map(p => p.join(",")).join(" ")}"/>`;
+    s += `<rect x="${W - R + 14}" y="${T + gi * 22}" width="14" height="14" fill="${c}"/><text x="${W - R + 34}" y="${T + gi * 22 + 12}" font-size="12">${esc(g)}</text>`;
+  });
+  $("#profile").innerHTML = s + "</svg>";
+  let h = `<table><tr><th>Use</th><th>Tube</th><th>Group</th><th class="n">Sleep min/day</th><th class="n">Bouts/day</th><th class="n">Bout min</th><th class="n">Counts/day</th><th>Status</th></tr>`;
+  for (const t of tubes) h += `<tr><td><input type="checkbox" data-id="${t.id}" ${excluded.has(t.id) ? "" : "checked"}></td><td>${t.id}</td><td>${esc(t.group || "–")}</td>
+    <td class="n">${fmt(t.sleepPerDay, 0)}</td><td class="n">${fmt(t.boutsPerDay, 1)}</td><td class="n">${fmt(t.boutLen, 1)}</td><td class="n">${fmt(t.countsPerDay, 0)}</td>
+    <td>${t.died ? `<span class="err">died after ${t.hoursAlive.toFixed(1)} h</span>` : "alive to the end"}</td></tr>`;
+  $("#tubes").innerHTML = h + "</table>";
+  $("#csv").disabled = false;
+}
+
+$("#files").onchange = async e => {
+  try {
+    monitors = []; excluded = new Set();
+    for (const f of [...e.target.files].sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}))) monitors.push(parseMonitor(await f.text()));
+    const m = monitors[0];
+    $("#fileinfo").textContent = `${monitors.length} file(s), ${m.t.length.toLocaleString()} minutes from ${new Date(m.t[0]).toLocaleString()} to ${new Date(m.t.at(-1)).toLocaleString()}.`;
+    analyse();
+  } catch (err) { $("#fileinfo").innerHTML = `<span class="err">${esc(err.message)}</span>`; }
+};
+$("#tubes").onchange = e => { const id = +e.target.dataset.id; if (!id) return; e.target.checked ? excluded.delete(id) : excluded.add(id); render(); };
+["#groups", "#thresh", "#skip", "#deathCut"].forEach(s => $(s).oninput = () => monitors.length && analyse());
+$("#metric").onchange = render;
+$("#csv").onclick = () => downloadCSV("dam_per_fly.csv", tubes.map(t => ({ tube: t.id, group: t.group, included: !excluded.has(t.id),
+  minutes_analysed: t.minutes, sleep_min_per_day: fmt(t.sleepPerDay, 1), bouts_per_day: fmt(t.boutsPerDay, 2), mean_bout_min: fmt(t.boutLen, 1),
+  day_sleep_min_per_day: fmt(t.daySleep, 1), night_sleep_min_per_day: fmt(t.nightSleep, 1), counts_per_day: fmt(t.countsPerDay, 1),
+  counts_per_waking_min: fmt(t.wakeActivity, 3), hours_analysed: fmt(t.hoursAlive, 1), died: t.died })));
+</script>
+</body>
+</html>

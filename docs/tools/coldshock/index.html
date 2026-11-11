@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FlyBench · Cold Shock</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css">
+<style>.marks button{flex:1 1 45%}.clock{font:700 28px/1 ui-monospace,Menlo,monospace;color:var(--fau-blue)}</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Cold shock (paralysis &amp; recovery)</h1>
+  <p class="sub">Times how long flies on ice take to stop moving, and how long they take to wake up once they are
+    warm again. Paralysis is reported in seconds from going onto ice; recovery in minutes from coming off it.</p>
+  <div class="how"><b>How it works</b><ol>
+    <li>Upload the video of a tube (or several tubes). Name the tube's genotype.</li>
+    <li>Play or scrub, and press each button at the moment it happens: onto ice, 50% and 100% paralysed, off ice, 50% and 100% recovered.</li>
+    <li>Every time is also an editable box, so you can type or fix any value. Leave a box empty if it never happened (e.g. the flies hadn't all woken when filming stopped).</li>
+    <li>Save the tube and repeat. The results compare genotypes for each of the four measures.</li></ol></div>
+
+  <div class="cols">
+    <div>
+      <div class="card"><video id="vid" controls playsinline muted style="width:100%;max-height:440px;background:#000;border-radius:6px"></video>
+        <div class="row" style="margin-top:8px"><span class="clock" id="clock">0:00.0</span>
+          <button class="ghost" data-step="-1">−1 s</button><button class="ghost" data-step="-0.1">−0.1 s</button><button class="ghost" data-step="0.1">+0.1 s</button><button class="ghost" data-step="1">+1 s</button></div></div>
+      <div class="card"><h2>Saved tubes</h2><div class="scroll" id="tubes"><p class="note">None yet.</p></div></div>
+      <div class="card"><h2>Results</h2>
+        <label>Measure <select id="metric">
+          <option value="p50">Time to 50% paralysis (s)</option><option value="p100">Time to 100% paralysis (s)</option>
+          <option value="r50">Time to 50% recovery (min)</option><option value="r100">Time to 100% recovery (min)</option></select></label>
+        <div class="chart" id="chart"></div><div class="scroll" id="summary"></div></div>
+    </div>
+    <div>
+      <div class="card"><p class="step">1 · Video</p><label>Video <input type="file" id="file" accept="video/*"></label>
+        <label>Genotype / group <input type="text" id="group" value="CS"></label>
+        <label>Tube label <input type="text" id="label" value="Tube 1"></label></div>
+      <div class="card"><p class="step">2 · Mark the moments</p><div class="marks" id="marks"></div>
+        <p class="note">Times are positions in the video, in seconds. Recovery can come from a second video: load it before marking “Off ice”.</p></div>
+      <div class="card"><p class="step">3 · Save</p><button id="save">Save tube</button>
+        <p class="note" id="msg"></p></div>
+      <div class="card"><p class="step">4 · Export</p><button id="csv">Download CSV</button></div>
+    </div>
+  </div>
+</div>
+<script src="../suite.js"></script>
+<script>
+chrome();
+const vid = $("#vid");
+const EVENTS = [["iceOn", "Onto ice"], ["p50", "50% paralysed"], ["p100", "100% paralysed"], ["iceOff", "Off ice"], ["r50", "50% recovered"], ["r100", "100% recovered"]];
+let marks = {}, tubes = [], editing = -1, src = "";
+$("#marks").innerHTML = EVENTS.map(([k, l]) => `<div class="row" style="margin-bottom:6px"><button data-mark="${k}" style="flex:1">${l}</button>
+  <input type="number" step="0.1" data-k="${k}" placeholder="s" style="width:96px;margin:0"></div>`).join("");
+const clock = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
+vid.ontimeupdate = () => $("#clock").textContent = clock(vid.currentTime);
+$("#file").onchange = e => { const f = e.target.files[0]; src = f.name; vid.src = URL.createObjectURL(f); };
+document.querySelectorAll("[data-step]").forEach(b => b.onclick = () => { vid.pause(); vid.currentTime = Math.max(0, vid.currentTime + +b.dataset.step); });
+$("#marks").onclick = e => { const k = e.target.dataset.mark; if (!k) return; marks[k] = +vid.currentTime.toFixed(1); showMarks(); };
+$("#marks").oninput = e => { const k = e.target.dataset.k; if (k) marks[k] = e.target.value === "" ? undefined : +e.target.value; };
+function showMarks() { EVENTS.forEach(([k]) => $(`[data-k="${k}"]`).value = marks[k] ?? ""); }
+// derived measures: paralysis in s from iceOn, recovery in min from iceOff
+function derive(m) { const d = (a, b) => m[a] != null && m[b] != null && m[b] >= m[a] ? m[b] - m[a] : NaN;
+  return { p50: d("iceOn", "p50"), p100: d("iceOn", "p100"), r50: d("iceOff", "r50") / 60, r100: d("iceOff", "r100") / 60 }; }
+$("#save").onclick = () => {
+  const t = { video: src, group: $("#group").value.trim() || "?", label: $("#label").value.trim(), marks: { ...marks } };
+  const d = derive(t.marks); if (!Object.values(d).some(Number.isFinite)) { $("#msg").innerHTML = '<span class="err">Mark at least onto/off ice and one event after it.</span>'; return; }
+  editing >= 0 ? tubes[editing] = t : tubes.push(t); editing = -1; marks = {}; showMarks(); render();
+  $("#msg").textContent = "Saved."; const m = $("#label").value.match(/^(.*?)(\d+)$/); if (m) $("#label").value = m[1] + (+m[2] + 1);
+};
+function render() {
+  let h = `<table><tr><th>Tube</th><th>Group</th><th class="n">50% para (s)</th><th class="n">100% para (s)</th><th class="n">50% rec (min)</th><th class="n">100% rec (min)</th><th></th></tr>`;
+  tubes.forEach((t, i) => { const d = derive(t.marks);
+    h += `<tr><td>${esc(t.label)}</td><td>${esc(t.group)}</td><td class="n">${fmt(d.p50, 1)}</td><td class="n">${fmt(d.p100, 1)}</td><td class="n">${fmt(d.r50)}</td><td class="n">${fmt(d.r100)}</td>
+      <td class="row"><button class="ghost" data-edit="${i}">Edit</button><button class="ghost" data-del="${i}">Delete</button></td></tr>`; });
+  $("#tubes").innerHTML = tubes.length ? h + "</table>" : '<p class="note">None yet.</p>';
+  const k = $("#metric").value, label = $("#metric").selectedOptions[0].text;
+  const gs = byGroup(tubes.map(t => ({ group: t.group, v: derive(t.marks)[k] })), "group", "v");
+  if (gs.length) { barChart($("#chart"), gs, { ylabel: label, title: label, err: "sd" }); summaryTable($("#summary"), gs, k[0] === "p" ? "s" : "min"); }
+  else $("#chart").innerHTML = $("#summary").innerHTML = "";
+}
+$("#tubes").onclick = e => { const d = e.target.dataset;
+  if (d.del != null) { tubes.splice(+d.del, 1); render(); }
+  if (d.edit != null) { const t = tubes[+d.edit]; editing = +d.edit; marks = { ...t.marks }; showMarks(); $("#group").value = t.group; $("#label").value = t.label;
+    $("#msg").textContent = `Editing ${t.label}: fix any time, then Save tube.`; } };
+$("#metric").onchange = render;
+$("#csv").onclick = () => downloadCSV("cold_shock.csv", tubes.map(t => { const d = derive(t.marks);
+  return { tube: t.label, group: t.group, video: t.video, ...Object.fromEntries(EVENTS.map(([k]) => [`${k}_video_s`, t.marks[k] ?? ""])),
+    paralysis50_s: fmt(d.p50, 1), paralysis100_s: fmt(d.p100, 1), recovery50_min: fmt(d.r50, 2), recovery100_min: fmt(d.r100, 2) }; }));
+</script>
+</body>
+</html>

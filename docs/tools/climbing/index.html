@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FlyBench · Climbing</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css">
+<style>.secs button{min-width:52px}</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Climbing (negative geotaxis)</h1>
+  <p class="sub">Tap the vial so the flies fall to the bottom; healthy flies climb straight back up. This scores where every
+    fly is, second by second, in four equal quadrants from Quadrant 1 (bottom) to Quadrant 4 (top).</p>
+  <div class="how"><b>How it works</b><ol>
+    <li>Upload the video. Scrub to the moment the flies land after the tap and press <b>This is 0 s</b>.</li>
+    <li><b>Vials:</b> drag a box over each vial, from the bottom of the plug to the bottom of the vial. Name each vial's genotype.</li>
+    <li><b>Flies:</b> for each second, click every fly. Click a circle to remove it.</li>
+    <li>Save the trial, then do the next video. <b>Edit</b> any saved trial to correct it later.</li></ol></div>
+
+  <div class="cols">
+    <div>
+      <div class="card">
+        <video id="vid" controls playsinline muted style="width:100%;max-height:420px;background:#000;border-radius:6px"></video>
+        <div class="row" style="margin-top:8px"><button id="zero" disabled>This is 0 s</button><span class="note" id="t0info"></span></div>
+      </div>
+      <div class="card">
+        <div class="row secs" id="secs"></div>
+        <div class="stage" style="margin-top:10px"><canvas id="cv" width="640" height="360"></canvas></div>
+        <p class="note" id="hint">Upload a video to begin.</p><div class="note" id="live"></div>
+      </div>
+      <div class="card"><h2>Saved trials</h2><div class="scroll" id="trials"><p class="note">None yet.</p></div></div>
+      <div class="card"><h2>Results</h2>
+        <div class="row"><label style="margin:0">At <select id="atSec"></select></label>
+          <label style="margin:0">Measure <select id="measure"><option value="topHalf">% in top half (Q3 + Q4)</option><option value="top">% in top quadrant (Q4)</option><option value="score">Climbing score (0 bottom – 1 top)</option></select></label></div>
+        <div class="chart" id="stack"></div><div class="chart" id="chart"></div><div class="scroll" id="summary"></div></div>
+    </div>
+    <div>
+      <div class="card"><p class="step">1 · Video</p>
+        <label>Climbing video <input type="file" id="file" accept="video/*"></label>
+        <label>Seconds to score after 0 s <input type="number" id="nsec" value="5" min="1" max="30"></label></div>
+      <div class="card"><p class="step">2 · Mark</p>
+        <div class="row"><button id="mVials" class="ghost">Draw vials</button><button id="mFlies">Click flies</button></div>
+        <div id="vials" style="margin-top:10px"></div></div>
+      <div class="card"><p class="step">3 · Save</p><button id="save" disabled>Save trial</button></div>
+      <div class="card"><p class="step">4 · Export</p><button id="csv">Download CSV</button></div>
+    </div>
+  </div>
+</div>
+<script src="../suite.js"></script>
+<script>
+chrome();
+const vid = $("#vid"), cv = $("#cv"), ctx = cv.getContext("2d");
+let name = "", frames = [], sec = 0, vials = [], pts = [], mode = "vials", drag = null, trials = [], editing = -1;
+const R = () => Math.max(6, cv.width / 110);
+const inVial = (p, v) => p[0] >= v.x && p[0] <= v.x + v.w && p[1] >= v.y && p[1] <= v.y + v.h;
+const quad = (p, v) => 4 - Math.min(3, Math.floor((p[1] - v.y) / (v.h / 4)));   // 4 = top quarter
+function tally(pp, vs) { return vs.map(v => { const q = [0, 0, 0, 0, 0]; pp.forEach(p => inVial(p, v) && q[quad(p, v)]++); return q; }); }
+
+vid.onloadedmetadata = () => { $("#zero").disabled = false; $("#hint").textContent = "Scrub to the moment the flies land, then press “This is 0 s”."; };
+$("#file").onchange = e => { const f = e.target.files[0]; name = f.name.replace(/\.[^.]+$/, ""); vid.src = URL.createObjectURL(f);
+  frames = []; pts = []; vials = []; editing = -1; $("#secs").innerHTML = ""; $("#t0info").textContent = ""; };
+// already there -> no "seeked" event fires, so don't wait for one; the timeout covers browsers that skip it anyway
+const seek = t => Math.abs(vid.currentTime - t) < 1e-3 ? Promise.resolve() :
+  new Promise(ok => { const done = () => { clearTimeout(to); ok(); }, to = setTimeout(done, 3000); vid.addEventListener("seeked", done, { once: true }); vid.currentTime = t; });
+$("#zero").onclick = async () => {
+  vid.pause(); const t0 = vid.currentTime, n = Math.max(1, +$("#nsec").value || 5);
+  cv.width = vid.videoWidth; cv.height = vid.videoHeight; frames = [];
+  for (let s = 0; s <= n; s++) {
+    if (t0 + s > vid.duration) break;
+    await seek(t0 + s); const c = document.createElement("canvas"); c.width = cv.width; c.height = cv.height; c.getContext("2d").drawImage(vid, 0, 0); frames.push(c);
+  }
+  pts = frames.map(() => []); $("#t0info").textContent = `0 s = ${t0.toFixed(2)} s into the video; ${frames.length - 1} s scored.`;
+  $("#secs").innerHTML = frames.map((_, s) => `<button class="ghost" data-s="${s}">${s} s</button>`).join("");
+  sec = 0; setMode(vials.length ? "flies" : "vials"); draw(); $("#save").disabled = false;
+};
+$("#secs").onclick = e => { if (e.target.dataset.s != null) { sec = +e.target.dataset.s; draw(); } };
+function setMode(m) { mode = m; $("#mVials").className = m === "vials" ? "" : "ghost"; $("#mFlies").className = m === "flies" ? "" : "ghost";
+  $("#hint").textContent = m === "vials" ? "Drag a box over each vial (plug to bottom). Click inside a box to delete it." : "Click every fly. Click a circle to remove it."; }
+$("#mVials").onclick = () => setMode("vials"); $("#mFlies").onclick = () => setMode("flies");
+
+function draw() {
+  if (!frames.length) return;
+  ctx.drawImage(frames[sec], 0, 0); const r = R();
+  ctx.lineWidth = r / 3; ctx.font = `bold ${r * 1.6}px sans-serif`;
+  vials.forEach((v, i) => { ctx.strokeStyle = "#003366"; ctx.strokeRect(v.x, v.y, v.w, v.h); ctx.strokeStyle = "rgba(255,255,255,.9)";
+    for (let q = 1; q < 4; q++) { ctx.beginPath(); ctx.moveTo(v.x, v.y + v.h * q / 4); ctx.lineTo(v.x + v.w, v.y + v.h * q / 4); ctx.stroke(); }
+    ctx.fillStyle = "#003366"; ctx.fillText(v.label || `Vial ${i + 1}`, v.x, v.y - r / 2); });
+  if (drag) { ctx.strokeStyle = "#cc0000"; ctx.strokeRect(drag.x, drag.y, drag.w, drag.h); }
+  ctx.strokeStyle = "#cc0000"; (pts[sec] || []).forEach(p => { ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 7); ctx.stroke(); });
+  [...$("#secs").children].forEach((b, s) => b.className = s === sec ? "" : "ghost");
+  const t = tally(pts[sec] || [], vials);
+  $("#live").innerHTML = `<b>${sec} s:</b> ` + vials.map((v, i) => `${esc(v.label || "Vial " + (i + 1))}: Q1 ${t[i][1]} · Q2 ${t[i][2]} · Q3 ${t[i][3]} · Q4 ${t[i][4]}`).join("  |  ");
+  $("#vials").innerHTML = vials.map((v, i) => `<label>Vial ${i + 1} genotype <input type="text" data-v="${i}" value="${esc(v.label)}"></label>`).join("");
+}
+$("#vials").oninput = e => { const i = e.target.dataset.v; if (i != null) { vials[i].label = e.target.value; draw(); } };
+cv.onpointerdown = e => { if (!frames.length) return; const p = canvasPoint(cv, e);
+  if (mode === "flies") { const a = pts[sec], i = a.findIndex(f => Math.hypot(f[0] - p[0], f[1] - p[1]) < R() * 1.3); i >= 0 ? a.splice(i, 1) : a.push(p); draw(); return; }
+  drag = { x: p[0], y: p[1], w: 0, h: 0, sx: p[0], sy: p[1] }; cv.setPointerCapture(e.pointerId); };
+cv.onpointermove = e => { if (!drag) return; const p = canvasPoint(cv, e);
+  Object.assign(drag, { x: Math.min(drag.sx, p[0]), y: Math.min(drag.sy, p[1]), w: Math.abs(p[0] - drag.sx), h: Math.abs(p[1] - drag.sy) }); draw(); };
+cv.onpointerup = e => { if (!drag) return; const d = drag; drag = null;
+  if (d.w < 8 && d.h < 8) { const i = vials.findIndex(v => inVial([d.sx, d.sy], v)); if (i >= 0) vials.splice(i, 1); }
+  else vials.push({ x: d.x, y: d.y, w: d.w, h: d.h, label: "" });
+  draw(); };
+
+$("#save").onclick = () => {
+  if (!vials.length) { $("#hint").innerHTML = '<span class="err">Draw at least one vial first.</span>'; return; }
+  const t = { name, frames, vials: vials.map(v => ({ ...v })), pts: pts.map(a => a.map(p => [...p])) };
+  editing >= 0 ? trials[editing] = t : trials.push(t); editing = -1; render();
+  $("#hint").textContent = "Saved. Upload the next video, or Edit a saved trial.";
+};
+function rows() {  // one row per trial × vial × second
+  const out = [];
+  trials.forEach(t => t.pts.forEach((pp, s) => tally(pp, t.vials).forEach((q, i) => { const n = q[1] + q[2] + q[3] + q[4];
+    out.push({ video: t.name, vial: i + 1, group: t.vials[i].label || `Vial ${i + 1}`, t_s: s, Q1_bottom: q[1], Q2: q[2], Q3: q[3], Q4_top: q[4], total: n,
+      topHalf: n ? (q[3] + q[4]) / n * 100 : NaN, top: n ? q[4] / n * 100 : NaN, score: n ? (q[2] + 2 * q[3] + 3 * q[4]) / (3 * n) : NaN }); })));
+  return out;
+}
+function render() {
+  let h = `<table><tr><th>Video</th><th>Vials</th><th class="n">Flies at 0 s</th><th></th></tr>`;
+  trials.forEach((t, i) => h += `<tr><td>${esc(t.name)}</td><td>${t.vials.map(v => esc(v.label || "?")).join(", ")}</td><td class="n">${t.pts[0].length}</td>
+    <td class="row"><button class="ghost" data-edit="${i}">Edit</button><button class="ghost" data-del="${i}">Delete</button></td></tr>`);
+  $("#trials").innerHTML = trials.length ? h + "</table>" : '<p class="note">None yet.</p>';
+  const maxS = Math.max(0, ...trials.map(t => t.pts.length - 1)), cur = $("#atSec").value;
+  $("#atSec").innerHTML = [...Array(maxS + 1).keys()].map(s => `<option ${String(s) === cur || (cur === "" && s === maxS) ? "selected" : ""}>${s}</option>`).join("") ;
+  const at = +$("#atSec").value, rs = rows().filter(r => r.t_s === at && r.total > 0), m = $("#measure").value;
+  if (!rs.length) { $("#stack").innerHTML = $("#chart").innerHTML = $("#summary").innerHTML = ""; return; }
+  const gnames = [...new Set(rs.map(r => r.group))];
+  stackedChart($("#stack"), gnames.map(g => { const gr = rs.filter(r => r.group === g);
+    return { group: g, n: gr.length, parts: ["Q1_bottom", "Q2", "Q3", "Q4_top"].map(k => mean(gr.map(r => r[k] / r.total))) }; }),
+    ["Quadrant 1 (bottom)", "Quadrant 2", "Quadrant 3", "Quadrant 4 (top)"], { title: `Where the flies are at ${at} s` });
+  const label = $("#measure").selectedOptions[0].text, gs = byGroup(rs, "group", m);
+  barChart($("#chart"), gs, { ylabel: label, title: `${label} at ${at} s` }); summaryTable($("#summary"), gs, m === "score" ? "" : "%");
+}
+$("#trials").onclick = e => { const d = e.target.dataset;
+  if (d.del != null) { trials.splice(+d.del, 1); render(); }
+  if (d.edit != null) { const t = trials[+d.edit]; editing = +d.edit; name = t.name; frames = t.frames; vials = t.vials.map(v => ({ ...v })); pts = t.pts.map(a => a.map(p => [...p]));
+    cv.width = frames[0].width; cv.height = frames[0].height; sec = 0;
+    $("#secs").innerHTML = frames.map((_, s) => `<button class="ghost" data-s="${s}">${s} s</button>`).join(""); setMode("flies"); draw(); $("#save").disabled = false;
+    $("#hint").textContent = `Editing ${t.name}. Fix the marks, then Save trial.`; cv.scrollIntoView({ behavior: "smooth" }); } };
+$("#atSec").onchange = render; $("#measure").onchange = render;
+$("#csv").onclick = () => downloadCSV("climbing_counts.csv", rows().map(({ topHalf, top, score, ...r }) => ({ ...r, pct_top_half: fmt(topHalf, 1), climbing_score: fmt(score, 3) })));
+</script>
+</body>
+</html>
