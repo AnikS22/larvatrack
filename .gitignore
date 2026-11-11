@@ -19,5 +19,14 @@ web/node_modules/
 web/.vercel/
 web/.env.local
 .vercel/
-videos/*
-!videos/.gitkeep
+larva/videos/*
+!larva/videos/.gitkeep
+# local-only: environments, tool caches
+.venv-idt/
+.crush/
+graphify-out/
+*.log
+# third-party publications - not ours to redistribute
+treadmill/Pratt2024_CurrBiol_treadmill.pdf
+treadmill/FigS3_treadmill_blueprint-26.png
+treadmill/Phidgets_3263_mechanical.pdf

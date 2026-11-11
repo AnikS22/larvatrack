@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fly Lab Tools</title>
+<meta name="description" content="Tools for measuring Drosophila behavior, built for PCB 4054C at Florida Atlantic University.">
+<style>
+:root{--ground:#14161a;--panel:#1c2026;--sunk:#23282f;--line:#333a44;
+      --ink:#e8ecf1;--dim:#9aa5b1;--accent:#ffd24a;--good:#5fd38d}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+      --ground:#f6f5f1;--panel:#fff;--sunk:#efeee9;--line:#dcdad3;
+      --ink:#1a1c20;--dim:#5b6470;--accent:#9a6b00;--good:#1f7a45}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);
+     font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:28px 16px 80px}
+.brand{display:flex;align-items:center;gap:14px;padding-bottom:18px;border-bottom:1px solid var(--line)}
+.brand .fau{background:#fff;border-radius:8px;padding:7px 10px;line-height:0;flex:none}
+.brand img{height:44px;width:auto}
+.brand p{margin:0;font-size:13px;color:var(--dim);line-height:1.45}
+.brand b{color:var(--ink);font-weight:600}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.15;margin:34px 0 8px}
+h1 span{color:var(--accent)}
+.lede{color:var(--dim);max-width:62ch;margin:0 0 26px}
+nav{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px}
+nav a{padding:6px 12px;border:1px solid var(--line);border-radius:99px;font-size:14px;
+      color:var(--ink);text-decoration:none}
+nav a:hover{border-color:var(--accent)}
+section{margin-top:54px}
+h2{font-size:24px;margin:0 0 4px}
+h2 small{display:block;font-size:13px;font-weight:500;color:var(--accent);
+         letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
+h3{font-size:17px;margin:0 0 6px}
+.sub{color:var(--dim);margin:0 0 18px;max-width:66ch}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+.card p{margin:0 0 10px;color:var(--dim);font-size:15px}
+.card p:last-child{margin-bottom:0}
+.tag{display:inline-block;font-size:12px;padding:2px 9px;border-radius:99px;margin-bottom:10px;
+     border:1px solid var(--line);color:var(--dim)}
+.tag.live{border-color:var(--good);color:var(--good)}
+.tag.req{border-color:var(--accent);color:var(--accent)}
+.btn{display:inline-block;padding:10px 16px;border-radius:8px;background:var(--accent);
+     color:#14161a;font-weight:600;text-decoration:none;margin-top:4px}
+a{color:var(--accent)}
+figure{margin:0}
+figure img,figure video{width:100%;height:auto;display:block;border-radius:10px;
+     border:1px solid var(--line);background:#000}
+figcaption{font-size:13px;color:var(--dim);margin-top:6px}
+.shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-top:16px}
+.shots img{background:#fff}
+code{font:13px ui-monospace,Menlo,monospace;background:var(--sunk);padding:1px 5px;border-radius:4px}
+.callout{border:1px solid var(--accent);border-radius:12px;padding:18px;background:var(--panel)}
+.callout h3{color:var(--accent)}
+ul{margin:6px 0 0;padding-left:20px;color:var(--dim)}
+li{margin:4px 0}
+footer{margin-top:64px;padding-top:18px;border-top:1px solid var(--line);font-size:13px;color:var(--dim)}
+</style>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <a href="https://www.fau.edu" class="fau"><img src="trace/fau-logo.svg" alt="Florida Atlantic University"></a>
+    <p>Built for <b>PCB 4054C</b>, Drosophila Genes &amp; Behavior<br>Florida Atlantic University · made by <b>Anik Sahai</b></p>
+  </div>
+
+  <h1>Fly lab <span>tools</span></h1>
+  <p class="lede">Tools for turning <i>Drosophila</i> assays into numbers: how far a larva
+    crawls, how high flies climb, how many get stuck on fly paper, and a small treadmill
+    to watch a single fly walk.</p>
+  <nav>
+    <a href="#larva">Larval foraging</a>
+    <a href="#fly">Adult fly assays</a>
+    <a href="#treadmill">Fly treadmill</a>
+    <a href="#ai">AI analysis</a>
+    <a href="#cost">What it costs</a>
+  </nav>
+
+  <section id="larva">
+    <h2><small>Assay 1</small>Larval foraging (rover / sitter)</h2>
+    <p class="sub">The <i>foraging</i> gene assay: rovers cover more ground than sitters, so
+      the result you need from each plate is the path length in millimetres.</p>
+    <div class="grid">
+      <div class="card">
+        <span class="tag live">Use it now</span>
+        <h3>Trace by hand</h3>
+        <p>Open a plate video, give the dish diameter, and follow each larva with the
+          mouse while the clip plays fast. It handles several larvae per plate, larvae on
+          yeast, and clips with debris. It runs entirely in your browser and the video is
+          never uploaded.</p>
+        <a class="btn" href="trace/">Open the tracer →</a>
+      </div>
+      <div class="card">
+        <span class="tag req">By request</span>
+        <h3>Automatic tracking</h3>
+        <p>A computer-vision tracker finds the larva, follows it, and returns the path
+          length and a replay of the path being walked. On plain agar it was within 0.6% of a
+          known path. It runs on a lab machine, not in the browser.</p>
+        <p><a href="#ai">Analysis by AI available by request.</a></p>
+      </div>
+    </div>
+    <div class="shots" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
+      <figure><img src="demo.gif" alt="A larva's path drawn in as it is walked" loading="lazy">
+        <figcaption>Plate 3, left: 72.1 mm. The path is drawn in as the larva walked it.</figcaption></figure>
+      <figure><img src="fig1_single_larva_paths.jpg" alt="Reconstructed paths for three single-larva plates" loading="lazy">
+        <figcaption>Reconstructed paths for single-larva plates. Scale bars are 10 mm.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="fly">
+    <h2><small>Assays 2–4</small>Adult fly assays</h2>
+    <p class="sub">Climbing (negative geotaxis), flight (fly paper) and cold shock. Software
+      counts the flies first, then a person checks every count in the browser before any
+      number is used.</p>
+    <div class="grid">
+      <div class="card"><span class="tag req">By request</span><h3>Climbing counter</h3>
+        <p>Finds the flies in each vial at 1–5 s after the tap and splits each vial into
+          quadrants. A review page lets you click to add a fly it missed or remove one it got
+          wrong.</p></div>
+      <div class="card"><span class="tag req">By request</span><h3>Fly paper counter</h3>
+        <p>Counts the real flies stuck in each zone between the red lines. It ignores the
+          flies printed on the paper.</p></div>
+      <div class="card"><span class="tag req">By request</span><h3>Spreadsheet &amp; graphs</h3>
+        <p>Turns the reviewed counts into a normalized spreadsheet and the graphs the lab
+          handouts ask for, with error bars, statistical tests and figure legends.</p></div>
+    </div>
+  </section>
+
+  <section id="treadmill">
+    <h2><small>Hardware</small>Fly treadmill</h2>
+    <p class="sub">A miniature belt treadmill that keeps a single fly walking in place, adapted
+      from Pratt et al. (2024, <i>Current Biology</i>). It is 3D-printed, driven by a
+      28BYJ-48 stepper motor, and uses a 6 mm GT2 belt.</p>
+    <div class="shots">
+      <figure><img src="img/mini_spin.gif" alt="The mini treadmill rotating" loading="lazy"><figcaption>Mini treadmill</figcaption></figure>
+      <figure><img src="img/assembled.png" alt="Treadmill parts assembled" loading="lazy"><figcaption>Every part in position</figcaption></figure>
+      <figure><img src="img/PLATE_LAYOUT.png" alt="All parts laid out on one print bed" loading="lazy"><figcaption>All parts on one print bed</figcaption></figure>
+    </div>
+    <p class="sub" style="margin-top:16px">Printable files and build notes:
+      <a href="https://github.com/AnikS22/larvatrack/tree/main/treadmill">treadmill/ on GitHub</a>.</p>
+  </section>
+
+  <section id="ai">
+    <div class="callout">
+      <h3>Analysis by AI available by request</h3>
+      <p style="margin:0;color:var(--dim)">Automatic larva tracking, fly counting and graphing
+        run on request, not as a public service. Email
+        <a href="mailto:asahai2024@fau.edu?subject=Fly%20lab%20analysis%20request">asahai2024@fau.edu</a>
+        with what you have (videos, photos) and what you need.</p>
+    </div>
+  </section>
+
+  <section id="cost">
+    <h2><small>Behind the scenes</small>What it costs to run all of this</h2>
+    <p class="sub">None of this is free. Each part has a real cost:</p>
+    <div class="grid">
+      <div class="card"><h3>AI time</h3>
+        <p>The tools were built and are kept working with paid AI models, and each request for
+          AI analysis uses more of that paid time.</p></div>
+      <div class="card"><h3>Computing</h3>
+        <p>Automatic tracking takes minutes of processor time per clip. It runs on a personal
+          machine that has to be switched on, and connecting it to the web uses a tunnel
+          service.</p></div>
+      <div class="card"><h3>Hosting &amp; storage</h3>
+        <p>Assay videos are large. Storing them, plus the web front ends and deployments,
+          adds up.</p></div>
+      <div class="card"><h3>Hardware</h3>
+        <p>The treadmill needs printer filament, a stepper motor, bearings, a GT2 belt and a
+          shaft, plus the test prints it takes to get the fit right.</p></div>
+    </div>
+    <p class="sub" style="margin-top:16px">That is why automatic analysis is by request. If your
+      lab uses these tools regularly, help covering the costs is what keeps them running.</p>
+  </section>
+
+  <footer>
+    A resource of Florida Atlantic University, made by Anik Sahai for PCB 4054C.
+    Source: <a href="https://github.com/AnikS22/larvatrack">github.com/AnikS22/larvatrack</a>
+  </footer>
+</div>
+</body>
+</html>

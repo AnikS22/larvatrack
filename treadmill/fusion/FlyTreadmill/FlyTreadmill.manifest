@@ -1,0 +1,8 @@
+{
+  "autodeskProduct": "Fusion360",
+  "type": "script",
+  "author": "",
+  "description": { "": "Fly treadmill assembly with revolute joints" },
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}

@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>larvatrack — offline</title>
+<style>
+:root{--ground:#14161a;--panel:#1c2026;--line:#333a44;--ink:#e8ecf1;
+      --dim:#9aa5b1;--accent:#ffd24a}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;
+     background:var(--ground);color:var(--ink);
+     font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+.card{max-width:560px;background:var(--panel);border:1px solid var(--line);
+      border-radius:14px;padding:34px 32px}
+h1{font-size:26px;margin:0 0 6px}
+h1 span{color:var(--accent)}
+.badge{display:inline-block;background:#3a2417;border:1px solid #6b3f22;
+       color:#ffb98a;padding:5px 12px;border-radius:99px;font-size:13px;
+       letter-spacing:.04em;margin:0 0 18px}
+p{margin:0 0 14px;color:var(--dim)}
+a{color:var(--accent)}
+.mail{display:inline-block;margin-top:6px;padding:12px 18px;background:var(--accent);
+      color:#14161a;border-radius:9px;font-weight:600;text-decoration:none}
+.foot{margin-top:24px;padding-top:18px;border-top:1px solid var(--line);
+      font-size:14px;color:var(--dim)}
+</style>
+<div class="card">
+  <h1>larva<span>track</span></h1>
+  <div class="badge">● System offline</div>
+  <p>Clips are measured on a single lab machine, and it is not currently running.
+     Uploads will not go through until it is switched back on.</p>
+  <p>If you need access, email and it can be brought back up:</p>
+  <a class="mail" href="mailto:asahai2024@fau.edu?subject=larvatrack%20access">
+    asahai2024@fau.edu</a>
+  <div class="foot">
+    Measures how far a <i>Drosophila</i> larva crawls in a petri dish, from a
+    phone video. Source:
+    <a href="https://github.com/AnikS22/larvatrack">github.com/AnikS22/larvatrack</a>
+  </div>
+</div>

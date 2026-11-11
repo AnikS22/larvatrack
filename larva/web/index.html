@@ -1,0 +1,379 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>larvatrack — trace by hand</title>
+<style>
+:root{--ground:#14161a;--panel:#1c2026;--sunk:#23282f;--line:#333a44;
+      --ink:#e8ecf1;--dim:#9aa5b1;--accent:#ffd24a;--good:#5fd38d;--bad:#ff6b6b}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--ground);color:var(--ink);
+     font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:1040px;margin:0 auto;padding:26px 16px 70px}
+.brand{display:flex;align-items:center;gap:14px;margin:0 0 22px;padding-bottom:18px;
+  border-bottom:1px solid var(--line)}
+.brand .fau{background:#fff;border-radius:8px;padding:7px 10px;line-height:0;flex:none}
+.brand img{height:44px;width:auto}
+.brand p{margin:0;font-size:13px;color:var(--dim);line-height:1.45}
+.brand b{color:var(--ink);font-weight:600}
+h1{font-size:23px;margin:0 0 4px} h1 span{color:var(--accent)}
+.sub{color:var(--dim);margin:0 0 18px;max-width:66ch}
+.cols{display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start}
+@media(max-width:860px){.cols{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+fieldset{border:1px solid var(--line);border-radius:10px;padding:13px;margin:0 0 14px}
+fieldset[disabled]{opacity:.45}
+legend{color:var(--accent);font-size:12px;letter-spacing:.09em;text-transform:uppercase;padding:0 6px}
+label{display:block;font-size:13px;color:var(--dim);margin:0 0 9px}
+input[type=number],input[type=file],select{width:100%;margin-top:5px;padding:8px;background:var(--sunk);
+  color:var(--ink);border:1px solid var(--line);border-radius:7px;font:inherit}
+button{width:100%;padding:11px;border-radius:8px;border:1px solid var(--accent);
+  background:var(--accent);color:#14161a;font:600 15px/1 inherit;cursor:pointer;margin-top:8px}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.ghost{background:transparent;color:var(--dim);border-color:var(--line);font-weight:400}
+.row{display:flex;flex-wrap:wrap;gap:7px}
+.row button{width:auto;padding:6px 11px;font-size:13px;background:var(--sunk);
+  color:var(--ink);border:2px solid var(--line);font-weight:600;margin:0}
+.stage{background:#000;border-radius:10px;overflow:hidden;min-height:180px;line-height:0}
+#c{display:block;width:100%;cursor:crosshair;touch-action:none}
+.note{color:var(--dim);font-size:13px;margin:9px 0 0}
+.err{color:var(--bad)}
+table{width:100%;border-collapse:collapse;font-size:14px;margin-top:6px}
+td{padding:3px 0} td.n{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+#full{position:fixed;inset:0;background:#000;z-index:9;display:flex;flex-direction:column}
+#fstage{flex:1;position:relative;display:flex;align-items:center;justify-content:center;min-height:0}
+#fc{display:block;cursor:crosshair;touch-action:none}
+#fmsg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  flex-direction:column;gap:10px;pointer-events:none;text-align:center;
+  font:600 30px/1.3 ui-sans-serif,system-ui;color:#fff;text-shadow:0 2px 14px #000}
+#fmsg .count{font-size:130px;line-height:1;color:var(--accent)}
+#fmsg small{font-size:17px;font-weight:400;color:#d6dde6}
+#fbar{display:flex;gap:16px;align-items:center;justify-content:space-between;
+  padding:10px 16px;background:var(--panel);border-top:1px solid var(--line);flex-wrap:wrap}
+#fbar .row{align-items:center}
+#fbar label{margin:0;display:flex;gap:6px;align-items:center}
+#fbar select{width:auto;margin:0;padding:6px 8px}
+#fbar button{width:auto;padding:8px 14px;font-size:14px;margin:0}
+#ftotal{font:600 17px/1 ui-monospace,Menlo,monospace;color:var(--good);min-width:210px;text-align:right}
+a{color:var(--accent)}
+</style>
+
+<div class="wrap">
+  <div class="brand">
+    <a href="https://www.fau.edu" class="fau"><img src="fau-logo.svg" alt="Florida Atlantic University"></a>
+    <p>A resource of <b>Florida Atlantic University</b><br>Made by <b>Anik Sahai</b></p>
+  </div>
+  <h1>larva<span>track</span></h1>
+  <p class="sub">Measure how far each <i>Drosophila</i> larva crawls by following it with the
+    mouse while the clip plays back fast. Everything runs in your browser — the video is
+    never uploaded.</p>
+
+  <div class="cols">
+    <div class="card">
+      <div class="stage"><canvas id="c"></canvas></div>
+      <p class="note" id="stagenote">Pick a video file to begin.</p>
+    </div>
+
+    <div>
+      <div class="card">
+        <fieldset>
+          <legend>1 — clip</legend>
+          <label>Video file<input type="file" id="file" accept="video/*"></label>
+          <p class="note" id="clipnote">MP4 or MOV, straight off the phone. Keep the camera still.</p>
+        </fieldset>
+
+        <fieldset id="fs2" disabled>
+          <legend>2 — dish</legend>
+          <p class="note" style="margin:0 0 9px">Drag across the dish on the frame, rim to rim.
+            That span is the diameter everything is scaled from.</p>
+          <label>Dish diameter (mm)
+            <input type="number" id="dish" value="100" min="5" max="500" step="0.5"></label>
+          <p class="note" id="dishnote">—</p>
+        </fieldset>
+
+        <fieldset id="fs3" disabled>
+          <legend>3 — follow</legend>
+          <label style="margin:0">Which larva?</label>
+          <div class="row" id="larvae"></div>
+          <button id="followbtn">Follow with the mouse</button>
+          <p class="note">Opens full screen. Click the larva to start, then keep the pointer on
+            it. 1–5 switch animal, space pauses, esc closes.</p>
+        </fieldset>
+      </div>
+
+      <div class="card" id="result" style="margin-top:16px" hidden>
+        <div style="color:var(--dim);font-size:13px">Path length</div>
+        <table id="rows"></table>
+        <button id="csv">Download CSV (points + summary)</button>
+        <button class="ghost" id="clear">Clear all paths</button>
+        <p class="note">A lower bound: the path is the straight line between samples taken every
+          0.4 s of real time.</p>
+      </div>
+    </div>
+  </div>
+  <p class="note" style="margin-top:24px">A resource of Florida Atlantic University, made by Anik Sahai. Source: <a href="https://github.com/AnikS22/larvatrack">github.com/AnikS22/larvatrack</a></p>
+</div>
+
+<!-- Full screen and cropped to the dish: in a sidebar column a larva is two pixels. -->
+<div id="full" hidden>
+  <div id="fstage"><canvas id="fc"></canvas><div id="fmsg"></div></div>
+  <div id="fbar">
+    <div class="row" id="flarvae"></div>
+    <div class="row">
+      <label>speed
+        <select id="rate">
+          <option>2</option><option>4</option><option selected>8</option><option>16</option>
+        </select>×</label>
+      <button id="fpause" class="ghost">Pause</button>
+      <button id="fstop">Stop &amp; keep</button>
+      <button id="fexit" class="ghost">Close</button>
+    </div>
+    <div id="ftotal">—</div>
+  </div>
+</div>
+
+<video id="v" playsinline muted preload="auto" hidden></video>
+
+<script>
+const $ = id => document.getElementById(id);
+const v = $('v'), c = $('c'), fc = $('fc');
+const LCOL = ['#ff3b30','#ffb340','#5fd38d','#ff6bff','#4aa8ff'];
+const col = n => LCOL[(n-1) % LCOL.length];
+const SAMPLE_S = 0.4;
+
+let fname = '', circle = null, drag = null;
+let paths = {};                 // larva -> [{t,x,y}] in full-frame video px, t in real seconds
+let cur = 1, nLarvae = 1;
+let fpts = [], fmouse = null, fstate = 'idle', lastT = -1, raf = 0;
+
+const mpp = () => circle ? (+$('dish').value || 100) / (2*circle.r) : 0;
+const lenPx = ps => ps.reduce((a,p,i) => i ? a + Math.hypot(p.x-ps[i-1].x, p.y-ps[i-1].y) : 0, 0);
+const dirty = () => Object.keys(paths).length > 0;
+addEventListener('beforeunload', e => { if(dirty()){ e.preventDefault(); e.returnValue = ''; } });
+
+// ---- clip -----------------------------------------------------------------
+$('file').onchange = e => {
+  const f = e.target.files[0]; if(!f) return;
+  if(dirty() && !confirm('Discard the paths traced on the current clip?')){ e.target.value=''; return; }
+  fname = f.name; paths = {}; circle = null; nLarvae = 1; cur = 1;
+  if(v.src) URL.revokeObjectURL(v.src);
+  v.src = URL.createObjectURL(f);
+  $('clipnote').textContent = 'reading the clip…';
+};
+v.onerror = () => { $('clipnote').innerHTML = '<span class="err">This browser cannot play that '
+  + 'file. iPhone HEVC .mov plays in Safari, and in Chrome on a Mac.</span>'; };
+v.onloadedmetadata = () => {
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  $('clipnote').textContent = `${fname} — ${v.videoWidth}×${v.videoHeight}, ${v.duration.toFixed(0)} s`;
+  if(Math.min(v.videoWidth, v.videoHeight) < 700) $('clipnote').innerHTML +=
+    ' — <span class="err">looks downscaled. AirDrop, iMessage and iCloud shrink video; '
+    + 'send the original if the larvae are hard to see.</span>';
+  $('fs2').disabled = false; setCircle(null);
+  v.currentTime = 0.01;
+  $('stagenote').textContent = 'Drag across the dish, rim to rim.';
+};
+v.onseeked = () => { if($('full').hidden) draw(); };
+
+// ---- main frame + dish ----------------------------------------------------
+function trail(g, ps, colour, w){
+  if(ps.length < 2) return;
+  g.strokeStyle = colour; g.lineWidth = w;
+  g.beginPath(); g.moveTo(ps[0].x, ps[0].y); ps.slice(1).forEach(p => g.lineTo(p.x, p.y)); g.stroke();
+}
+function draw(){
+  if(!v.videoWidth) return;
+  const g = c.getContext('2d');
+  g.drawImage(v, 0, 0);
+  if(circle){
+    g.strokeStyle = '#ffd24a'; g.lineWidth = Math.max(3, c.width/380);
+    g.beginPath(); g.arc(circle.cx, circle.cy, circle.r, 0, 7); g.stroke();
+  }
+  Object.entries(paths).forEach(([k, ps]) => trail(g, ps, col(+k), Math.max(2, c.width/420)));
+}
+function at(e, el, crop){
+  const b = el.getBoundingClientRect();
+  return {x: crop.x + (e.clientX-b.left) * crop.w / b.width,
+          y: crop.y + (e.clientY-b.top)  * crop.h / b.height};
+}
+const whole = () => ({x:0, y:0, w:v.videoWidth, h:v.videoHeight});
+c.addEventListener('pointerdown', e => {
+  if($('fs2').disabled) return;
+  e.preventDefault(); c.setPointerCapture(e.pointerId);
+  drag = at(e, c, whole());
+});
+c.addEventListener('pointermove', e => {
+  if(!drag) return;
+  const p = at(e, c, whole());
+  circle = {cx:(drag.x+p.x)/2, cy:(drag.y+p.y)/2, r:Math.hypot(p.x-drag.x, p.y-drag.y)/2};
+  draw();
+});
+c.addEventListener('pointerup', () => {
+  if(!drag) return;
+  drag = null;
+  setCircle(circle && circle.r >= 20 ? circle : null);
+});
+function setCircle(cc){
+  circle = cc;
+  $('dishnote').textContent = cc ? `radius ${Math.round(cc.r)} px → ${mpp().toFixed(4)} mm/px` : '—';
+  $('fs3').disabled = !cc;
+  larvaButtons($('larvae'), false); results(); draw();
+}
+$('dish').oninput = () => { if(circle) setCircle(circle); };
+
+// ---- larva picker ---------------------------------------------------------
+function larvaButtons(box, inFull){
+  box.innerHTML = '';
+  for(let i=1;i<=nLarvae;i++){
+    const b = document.createElement('button');
+    b.textContent = 'larva ' + i + (paths[i] ? ' ✓' : '');
+    b.style.borderColor = col(i);
+    if(i === cur){ b.style.background = col(i); b.style.color = '#14161a'; }
+    b.onclick = () => { if(inFull){ keep(); cur = i; arm(); } else { cur = i; larvaButtons(box, false); } };
+    box.appendChild(b);
+  }
+  if(nLarvae < 5){
+    const m = document.createElement('button');
+    m.textContent = '+ another';
+    m.onclick = () => { nLarvae++; cur = nLarvae; inFull ? (keep(), arm()) : larvaButtons(box, false); };
+    box.appendChild(m);
+  }
+}
+
+// ---- follow ---------------------------------------------------------------
+// Cropped to the dish (plus a margin) so the plate fills the screen.
+function crop(){
+  const m = circle.r * 1.08;
+  const x = Math.max(0, circle.cx - m), y = Math.max(0, circle.cy - m);
+  return {x, y, w: Math.min(v.videoWidth, circle.cx + m) - x, h: Math.min(v.videoHeight, circle.cy + m) - y};
+}
+function fit(){
+  const k = crop(), s = $('fstage').getBoundingClientRect();
+  const sc = Math.min(s.width / k.w, s.height / k.h);
+  fc.width = Math.round(k.w); fc.height = Math.round(k.h);
+  fc.style.width = k.w*sc + 'px'; fc.style.height = k.h*sc + 'px';
+}
+addEventListener('resize', () => { if(!$('full').hidden) fit(); });
+
+function fdraw(){
+  const k = crop(), g = fc.getContext('2d'), w = fc.width;
+  g.setTransform(1,0,0,1,0,0);
+  g.drawImage(v, k.x, k.y, k.w, k.h, 0, 0, k.w, k.h);
+  g.translate(-k.x, -k.y);                         // draw in full-frame coordinates
+  if(fstate === 'await_click'){
+    // Where each earlier run started, so the same animal is not followed twice.
+    const R = Math.max(12, w/40);
+    Object.entries(paths).forEach(([i, ps]) => {
+      const p = ps[0];
+      g.strokeStyle = col(+i); g.lineWidth = Math.max(3, w/300);
+      g.beginPath(); g.arc(p.x, p.y, R, 0, 7); g.stroke();
+      g.font = `600 ${Math.max(16, w/28)}px system-ui`; g.textAlign = 'center';
+      g.lineWidth = Math.max(4, w/220); g.strokeStyle = '#000';
+      g.strokeText(i, p.x, p.y - R*1.8); g.fillStyle = col(+i); g.fillText(i, p.x, p.y - R*1.8);
+    });
+  }
+  trail(g, fpts, col(cur), Math.max(3, w/250));
+  if(fmouse){
+    g.strokeStyle = col(cur); g.lineWidth = Math.max(2, w/400);
+    g.beginPath(); g.arc(fmouse.x, fmouse.y, Math.max(10, w/45), 0, 7); g.stroke();
+  }
+}
+function loop(){
+  // Sampled against VIDEO time, so the path does not depend on playback speed.
+  if(fstate === 'running' && !v.paused && fmouse && v.currentTime - lastT >= SAMPLE_S){
+    fpts.push({t: v.currentTime, x: fmouse.x, y: fmouse.y}); lastT = v.currentTime;
+  }
+  fdraw();
+  $('ftotal').textContent = `larva ${cur}  ${(lenPx(fpts)*mpp()).toFixed(1)} mm  `
+    + `${v.currentTime.toFixed(0)}/${v.duration.toFixed(0)}s`;
+  raf = requestAnimationFrame(loop);
+}
+const msg = h => $('fmsg').innerHTML = h;
+
+function arm(){
+  // Paused on frame 1 until the animal is pointed at, or the pointer's trip to
+  // it would be counted as distance.
+  fpts = []; lastT = -1; fstate = 'await_click';
+  v.pause(); v.currentTime = 0;
+  $('fpause').textContent = 'Pause';
+  larvaButtons($('flarvae'), true);
+  msg(`<div>Click larva ${cur} to start</div><small>then follow it — the clip runs at ${$('rate').value}×`
+    + (dirty() ? '<br>earlier starts are marked on the plate' : '') + '</small>');
+}
+function countdown(n){
+  fstate = 'countdown';
+  if(n === 0){ msg(''); fstate = 'running'; v.playbackRate = +$('rate').value; v.play().catch(()=>{}); return; }
+  msg(`<div class="count">${n}</div><small>follow larva ${cur}</small>`);
+  setTimeout(() => countdown(n-1), 700);
+}
+function keep(){
+  if(fstate === 'running' && fmouse) fpts.push({t: v.currentTime, x: fmouse.x, y: fmouse.y});
+  if(fpts.length > 1) paths[cur] = fpts;
+  fpts = []; fstate = 'idle'; v.pause(); msg('');
+  larvaButtons($('flarvae'), true); results();
+}
+
+fc.addEventListener('pointermove', e => { if(circle) fmouse = at(e, fc, crop()); });
+fc.addEventListener('pointerdown', e => {
+  if(fstate !== 'await_click') return;
+  e.preventDefault();
+  fmouse = at(e, fc, crop());
+  fpts = [{t: 0, x: fmouse.x, y: fmouse.y}]; lastT = 0;   // where the animal actually starts
+  countdown(3);
+});
+$('followbtn').onclick = () => {
+  $('full').hidden = false; fit(); arm();
+  cancelAnimationFrame(raf); loop();
+};
+$('fpause').onclick = () => {
+  if(fstate !== 'running') return;
+  if(v.paused){ v.play(); $('fpause').textContent = 'Pause'; }
+  else { v.pause(); $('fpause').textContent = 'Resume'; }
+};
+$('fstop').onclick = () => {
+  keep();
+  const next = [...Array(nLarvae).keys()].map(i => i+1).find(i => !paths[i]);
+  if(next){ cur = next; arm(); }
+  else msg(`<div>All ${nLarvae} done</div><small>close, then download the CSV</small>`);
+};
+$('fexit').onclick = () => {
+  if(fstate === 'running') keep();
+  fstate = 'idle'; cancelAnimationFrame(raf);
+  $('full').hidden = true; larvaButtons($('larvae'), false);
+  v.currentTime = 0.01;                             // redraws the frame with the paths
+};
+$('rate').onchange = () => { if(fstate === 'running') v.playbackRate = +$('rate').value; };
+v.addEventListener('ended', () => { if(fstate === 'running') $('fstop').click(); });
+addEventListener('keydown', e => {
+  if($('full').hidden) return;
+  if(e.code === 'Space'){ e.preventDefault(); $('fpause').click(); }
+  if(e.code === 'Escape') $('fexit').click();
+  const n = /^Digit([1-5])$/.exec(e.code);
+  if(n && +n[1] <= nLarvae){ if(fstate === 'running') keep(); cur = +n[1]; arm(); }
+});
+
+// ---- results --------------------------------------------------------------
+function results(){
+  const ks = Object.keys(paths).sort((a,b) => a-b);
+  $('result').hidden = !ks.length;
+  $('rows').innerHTML = ks.map(k => `<tr><td style="color:${col(+k)}"><b>larva ${k}</b></td>`
+    + `<td class="n">${(lenPx(paths[k])*mpp()).toFixed(1)} mm</td>`
+    + `<td class="n" style="color:var(--dim)">${paths[k].length} pts</td></tr>`).join('');
+}
+$('clear').onclick = () => { if(confirm('Clear every traced path?')){ paths = {}; setCircle(circle); } };
+$('csv').onclick = () => {
+  const m = mpp(), ks = Object.keys(paths).sort((a,b) => a-b);
+  const q = s => `"${String(s).replace(/"/g, '""')}"`;
+  const lines = ['# summary', 'file,larva,path_mm,points,duration_s,dish_mm,dish_r_px,mm_per_px,method'];
+  ks.forEach(k => { const ps = paths[k];
+    lines.push([q(fname), k, (lenPx(ps)*m).toFixed(2), ps.length, (ps.at(-1).t - ps[0].t).toFixed(1),
+      $('dish').value, circle.r.toFixed(1), m.toFixed(6), 'hand'].join(',')); });
+  // mm columns are relative to the dish centre, y pointing down as in the frame.
+  lines.push('', '# points', 'file,larva,t_s,x_px,y_px,x_mm,y_mm');
+  ks.forEach(k => paths[k].forEach(p => lines.push([q(fname), k, p.t.toFixed(2),
+    p.x.toFixed(1), p.y.toFixed(1), ((p.x-circle.cx)*m).toFixed(2), ((p.y-circle.cy)*m).toFixed(2)].join(','))));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([lines.join('\n') + '\n'], {type: 'text/csv'}));
+  a.download = (fname.replace(/\.[^.]+$/, '') || 'larvatrack') + '_hand.csv';
+  a.click(); URL.revokeObjectURL(a.href);
+};
+</script>
